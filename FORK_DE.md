@@ -23,8 +23,21 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   Llama-Schichten auf der GPU.
 - **bfloat16 statt float16:** Grafikkarten ohne bfloat16 fallen automatisch auf float16
   zurück. Auf der CPU rechnet das Programm immer mit float32.
-- **Llama auf der CPU:** `LLM_GPU_LAYERS = 0` lässt den Grafikspeicher ganz für die
-  Sprachausgabe frei.
+- **Llama ist optional und standardmäßig aus** (`USE_LLM = false`): Kapiteltitel kommen aus
+  der ersten Überschrift jeder Datei, der Buchtitel aus dem Projektnamen, die Reihenfolge
+  aus den Dateinamen. Dabei werden Zahlwörter erkannt (`Kapitel_zwei` nach `Kapitel_eins`),
+  Vorwort, Prolog und Einleitung kommen zuerst, Nachwort, Epilog und Anhang zuletzt.
+  Die Base-Modelle von Qwen3-TTS können mit den Emotionen des LLM ohnehin nichts anfangen,
+  und Stufe 1 ist ohne LLM in Sekunden fertig. Wer Llama trotzdem nutzen will, baut mit
+  `--features llm` und setzt `USE_LLM = true`. `LLM_GPU_LAYERS = 0` lässt dann den
+  Grafikspeicher ganz für die Sprachausgabe frei.
+- **Zahlen ausschreiben** (`NORMALIZE_NUMBERS = true`, Settings → Text Processing): vor der
+  Sprachausgabe werden Zahlen, Jahreszahlen, Datumsangaben, Ordnungszahlen, Uhrzeiten,
+  Geldbeträge, Prozent, Maßeinheiten, Bereiche und gängige Abkürzungen ausgeschrieben, nur
+  bei deutschen Abschnitten. Ausprobieren ohne Hörbuch:
+  `text-to-audiobook normalize "Am 3. Mai 1995 um 14:30 Uhr kostete es 5,50 €."`
+  Ordnungszahlen werden nur mit eindeutigem Wort davor umgewandelt („am 3.“, „der 3.“,
+  „in der 3.“); sonst bleibt die Zahl stehen. Römische Zahlen bleiben unverändert.
 - **Neutrale Erzählstimme** im `NARRATOR_PROMPT` und deutscher Text für die automatisch
   erzeugte Referenzstimme.
 
@@ -46,13 +59,14 @@ cargo build --release
 ```
 
 Mit NVIDIA-Grafikkarte (CUDA-Toolkit mit `nvcc` nötig). Damit rechnet die Sprachausgabe
-auf der GPU, Llama wie vorgesehen auf der CPU (`LLM_GPU_LAYERS = 0`):
+auf der GPU:
 
 ```bash
 cargo build --release --features cuda
 ```
 
-Soll auch Llama auf die GPU, mit `--features llm-cuda` bauen. llama.cpp bindet CUDA dann
+Mit dem optionalen Llama zusätzlich `llm` angeben (`--features cuda,llm`); Llama läuft dann
+auf der CPU. Soll auch Llama auf die GPU, mit `--features llm-cuda` bauen. llama.cpp bindet CUDA dann
 statisch ein und braucht `libcudart_static.a`, `libcublas_static.a`, `libcublasLt_static.a`
 und `libculibos.a`. Gesucht wird in `/usr/local/cuda`, `/opt/cuda` oder im Ordner aus
 `CUDA_LIBRARY_PATH`. Bei den Debian-Paketen liegen sie, falls installiert, meist unter
@@ -84,7 +98,7 @@ Kommandozeile, etwa `run`, `prepare` oder `generate`.
 
 Beim ersten Start lädt das Programm die Modelle herunter:
 
-- Llama 3.2 1B (GGUF, etwa 800 MB) nach `models/`
+- Llama 3.2 1B (GGUF, etwa 800 MB) nach `models/`, nur mit `USE_LLM = true`
 - Qwen3-TTS (0.6B oder 1.7B) in den Hugging-Face-Zwischenspeicher
   (`~/.cache/huggingface`). Von der Python-Version schon geladene Modelle werden
   weiterverwendet.
@@ -120,7 +134,8 @@ Projektordner, zum Beispiel:
   "TTS_LANGUAGE": "german",
   "TTS_MODEL_NAME": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
   "TTS_DTYPE": "bfloat16",
-  "LLM_GPU_LAYERS": 0,
+  "NORMALIZE_NUMBERS": true,
+  "USE_LLM": false,
   "SILENCE_AFTER_PARAGRAPH_MS": 1200,
   "SILENCE_AFTER_PERIOD_MS": 500
 }

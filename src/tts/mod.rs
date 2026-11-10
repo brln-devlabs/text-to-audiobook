@@ -518,6 +518,23 @@ impl TtsEngine {
         }
     }
 
+    /// Text as sent to the TTS: with `NORMALIZE_NUMBERS` German segments get
+    /// numbers, dates, units and abbreviations spelled out.
+    pub fn prepare_text(&self, text: &str, language: &str) -> String {
+        if !self.settings.normalize_numbers {
+            return text.to_string();
+        }
+        if language != "german" {
+            log::debug!("NORMALIZE_NUMBERS only supports German; '{language}' text left as is");
+            return text.to_string();
+        }
+        let out = crate::normalize_de::normalize(text);
+        if out != text {
+            log::debug!("Normalized: {out}");
+        }
+        out
+    }
+
     /// Existing WAVs of chunk `i`: `chunk_NNN.wav`, or `_0`, `_1`, ...
     pub fn existing_parts(output_dir: &Path, i: usize) -> Vec<PathBuf> {
         let base = output_dir.join(format!("chunk_{i:06}.wav"));
@@ -583,13 +600,8 @@ impl TtsEngine {
             } else {
                 self.anchor_path.clone()
             };
-            let result = self.synthesize(
-                &seg.normalized_text,
-                ref_audio.as_deref(),
-                &out_path,
-                &language,
-                stop,
-            );
+            let text = self.prepare_text(&seg.normalized_text, &language);
+            let result = self.synthesize(&text, ref_audio.as_deref(), &out_path, &language, stop);
             let paths = match result {
                 Ok(p) => p,
                 Err(e) if e.is::<ForceStopped>() => {
@@ -903,6 +915,30 @@ pub mod tests {
         assert!(dir.path().join("chunk_000000_1.wav").exists());
         assert!(!dir.path().join("chunk_000000_2.wav").exists());
         assert_eq!(TtsEngine::existing_parts(dir.path(), 0).len(), 2);
+    }
+
+    #[test]
+    fn numbers_are_normalized_only_when_enabled() {
+        let s = Settings {
+            normalize_numbers: true,
+            ..Settings::default()
+        };
+        let (dir, fake, mut engine) = setup(&s);
+        engine
+            .process_all(
+                &segs(&[("Am 3. Mai 1995.", None)]),
+                &dir.path().join("out"),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            fake.clone_calls.lock().unwrap()[0].0,
+            "Am dritten Mai neunzehnhundertfünfundneunzig."
+        );
+        assert_eq!(engine.prepare_text("Seit 1995.", "english"), "Seit 1995.");
+        let (_dir, _fake, off) = setup(&Settings::default());
+        assert_eq!(off.prepare_text("Seit 1995.", "german"), "Seit 1995.");
     }
 
     #[test]

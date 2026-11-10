@@ -159,11 +159,15 @@ impl SettingsForm {
             sections: vec![
                 (
                     "Text Processing",
-                    vec![field("MAX_WORDS_PER_CHUNK", "Max words per chunk", None)],
+                    vec![
+                        field("MAX_WORDS_PER_CHUNK", "Max words per chunk", None),
+                        field("NORMALIZE_NUMBERS", "Spell out numbers (German)", bools()),
+                    ],
                 ),
                 (
                     "LLM",
                     vec![
+                        field("USE_LLM", "Use LLM (emotions, titles, order)", bools()),
                         field("LLM_MAX_RETRIES", "LLM retry attempts (per call)", None),
                         field("LLM_GPU_LAYERS", "LLM GPU layers (0 = CPU, -1 = all)", None),
                     ],
@@ -262,7 +266,12 @@ fn apply_fields<'a>(
         "TTS_MAX_WORDS_FALLBACK",
         "LLM_GPU_LAYERS",
     ];
-    let bool_keys = ["CHAPTER_BY_CHAPTER", "VOCALIZE_CHAPTER_NAMES"];
+    let bool_keys = [
+        "CHAPTER_BY_CHAPTER",
+        "VOCALIZE_CHAPTER_NAMES",
+        "USE_LLM",
+        "NORMALIZE_NUMBERS",
+    ];
     let mut applied = Map::new();
     for (key, raw) in fields {
         let raw = raw.trim();

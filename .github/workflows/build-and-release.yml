@@ -21,9 +21,11 @@ jobs:
           - os: ubuntu-latest
             binary: text-to-audiobook
             asset_name: text-to-audiobook-linux
+            features: --features llm
           - os: windows-latest
             binary: text-to-audiobook.exe
             asset_name: text-to-audiobook-windows.exe
+            features: --features llm
           - os: macos-latest
             binary: text-to-audiobook
             asset_name: text-to-audiobook-macos
@@ -68,7 +70,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test --locked
+        run: cargo test --locked --features llm
 
   create-release:
     needs: [build, test]
@@ -92,7 +94,7 @@ jobs:
             # text-to-audiobook Release
 
             Pre-built binaries for Windows, Linux and macOS (CPU builds; macOS with Metal).
-            For NVIDIA GPUs build from source with `cargo build --release --features cuda`.
+            For NVIDIA GPUs build from source with `cargo build --release --features cuda,llm`.
 
             ## Download
 

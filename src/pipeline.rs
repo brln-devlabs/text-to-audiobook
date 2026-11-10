@@ -36,7 +36,7 @@ use crate::audio::filter::denoise;
 use crate::cancel::{StopFlag, stopped};
 use crate::chunker::{Chunk, split_to_chunks};
 use crate::config::Config;
-use crate::llm::{FilePreview, LlmNormalizer};
+use crate::llm::{FilePreview, LlmNormalizer, ProjectHints};
 use crate::markdown_cleaner::clean;
 use crate::natsort::{natsorted, natural_cmp};
 use crate::pyval;
@@ -226,6 +226,16 @@ fn order_files(
             ),
         );
         ordered
+    } else if !llm.is_loaded() {
+        let ordered = crate::llm::rule_order(&names);
+        emit(
+            progress,
+            &format!(
+                "Ordering {} files by name (number words, prologue/epilogue)",
+                ordered.len()
+            ),
+        );
+        ordered
     } else {
         let mut presorted = md_paths.clone();
         presorted.sort_by(|a, b| natural_cmp(&file_name(a), &file_name(b)));
@@ -257,15 +267,50 @@ fn order_files(
         .collect()
 }
 
-fn build_chunks(md_files: &[PathBuf], max_words: usize, progress: Progress) -> Result<Vec<Chunk>> {
+/// Text of the first Markdown heading (`# ...`), formatting removed.
+pub fn first_heading(md: &str) -> Option<String> {
+    let mut in_fence = false;
+    for line in md.lines() {
+        let t = line.trim();
+        if t.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let Some(rest) = t.strip_prefix('#') else {
+            continue;
+        };
+        let rest = rest.trim_start_matches('#');
+        if !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let title = clean(rest.trim().trim_end_matches('#').trim());
+        if !title.is_empty() {
+            return Some(title);
+        }
+    }
+    None
+}
+
+fn build_chunks(
+    md_files: &[PathBuf],
+    max_words: usize,
+    progress: Progress,
+    hints: &mut ProjectHints,
+) -> Result<Vec<Chunk>> {
     emit(progress, &format!("Found {} file(s)", md_files.len()));
     emit(progress, "Cleaning and chunking text...");
     let mut chunks = Vec::new();
-    for f in md_files {
+    for (n, f) in md_files.iter().enumerate() {
         let raw = std::fs::read_to_string(f)
             .map_err(|e| anyhow::anyhow!("reading {}: {e}", f.display()))?;
         let cleaned = clean(&raw);
         let source = file_stem(f);
+        hints
+            .chapters
+            .insert(source.clone(), (n as i64 + 1, first_heading(&raw)));
         let file_chunks = split_to_chunks(&cleaned, max_words, &source);
         emit(
             progress,
@@ -304,7 +349,9 @@ pub fn prepare_segments_for_project(
     let llm: &mut LlmNormalizer = match llm {
         Some(l) => l,
         None => {
-            emit(progress, "Loading LLM...");
+            if cfg.settings.use_llm {
+                emit(progress, "Loading LLM...");
+            }
             let mut l = LlmNormalizer::new(cfg.paths.llm_model_path(), &cfg.settings);
             l.load();
             own.insert(l)
@@ -331,12 +378,38 @@ pub fn prepare_segments_for_project(
                     .join(", ")
             ),
         );
-        let chunks = build_chunks(&ordered, cfg.settings.max_words_per_chunk, progress)?;
+        let mut hints = ProjectHints {
+            story_title: Some(name.clone()),
+            ..Default::default()
+        };
+        let chunks = build_chunks(
+            &ordered,
+            cfg.settings.max_words_per_chunk,
+            progress,
+            &mut hints,
+        )?;
         if chunks.is_empty() {
             return Ok(Vec::new());
         }
-        emit(progress, &format!("[{name}] emotion analysis..."));
-        let segments = llm.process_all(&chunks, &cache_dir, &cfg.settings, Some(progress), stop)?;
+        emit(
+            progress,
+            &format!(
+                "[{name}] {}...",
+                if llm.is_loaded() {
+                    "emotion analysis"
+                } else {
+                    "building segments"
+                }
+            ),
+        );
+        let segments = llm.process_all(
+            &chunks,
+            &cache_dir,
+            &cfg.settings,
+            &hints,
+            Some(progress),
+            stop,
+        )?;
         emit(
             progress,
             &format!("[{name}] {} TTS segments ready", segments.len()),
@@ -386,7 +459,9 @@ pub fn prepare_segments(
         ),
     );
 
-    emit(progress, "Loading LLM...");
+    if cfg.settings.use_llm {
+        emit(progress, "Loading LLM...");
+    }
     let mut llm = LlmNormalizer::new(cfg.paths.llm_model_path(), &cfg.settings);
     llm.load();
 
@@ -794,6 +869,9 @@ pub fn cached_segments_by_project(cfg: &Config, input_dir: &Path) -> SegmentsByP
 /// Re-check the language of segments that differ from the project's
 /// majority language and store corrections.
 pub fn fix_languages(cfg: &Config, selected: &[String]) -> Result<()> {
+    if !cfg.settings.use_llm {
+        anyhow::bail!("Fix Languages needs the LLM: set USE_LLM to true (Settings → LLM)");
+    }
     let mut llm = LlmNormalizer::new(cfg.paths.llm_model_path(), &cfg.settings);
     llm.load();
     if !llm.is_loaded() {

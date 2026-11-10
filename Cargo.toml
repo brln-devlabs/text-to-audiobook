@@ -13,10 +13,11 @@ name = "text-to-audiobook"
 path = "src/main.rs"
 
 [features]
-default = ["gui", "llm", "tts"]
+default = ["gui", "tts"]
 # Desktop-Oberfläche (egui/eframe)
 gui = ["dep:eframe", "dep:rfd"]
-# Llama-Hilfsmodell über llama.cpp (baut llama.cpp mit cmake)
+# Llama-Hilfsmodell über llama.cpp (baut llama.cpp mit cmake); wird nur mit
+# USE_LLM = true geladen
 llm = ["dep:llama-cpp-2"]
 # Qwen3-TTS über Candle
 tts = ["dep:qwen_tts", "dep:candle-core"]

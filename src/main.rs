@@ -74,6 +74,11 @@ enum Command {
     FixLanguages,
     /// Regenerate the voice reference cache/voice_reference.wav
     VoiceRef,
+    /// Show how NORMALIZE_NUMBERS rewrites German text (argument or stdin)
+    Normalize {
+        /// Text to normalize; reads standard input when omitted
+        text: Option<String>,
+    },
 }
 
 fn selected(cli: &Cli) -> Option<&[String]> {
@@ -183,6 +188,17 @@ fn run(cli: Cli) -> Result<()> {
                     .collect(),
             };
             pipeline::fix_languages(&cfg, &names)?;
+        }
+        Command::Normalize { text } => {
+            let input = match text {
+                Some(t) => t.clone(),
+                None => {
+                    let mut s = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut s)?;
+                    s
+                }
+            };
+            println!("{}", text_to_audiobook::normalize_de::normalize(&input));
         }
         Command::VoiceRef => {
             let p = TtsEngine::regenerate_voice_reference(&cfg.settings, &cfg.paths)?;

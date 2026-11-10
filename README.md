@@ -4,12 +4,13 @@
 >
 > **Rust:** This version is a reimplementation of the original Python project in Rust. Settings, cache layout and output structure stay compatible. See [Differences from the Python version](#differences-from-the-python-version).
 
-An open-source text-to-speech application that turns Markdown texts into audiobooks. It combines the Qwen3-TTS model (voice cloning) with LLM-based text analysis (Llama 3.2 1B) and ships as a single native binary with a desktop GUI and a command-line interface.
+An open-source text-to-speech application that turns Markdown texts into audiobooks. It combines the Qwen3-TTS model (voice cloning) with rule-based text preparation, optionally assisted by a small LLM (Llama 3.2 1B), and ships as a single native binary with a desktop GUI and a command-line interface.
 
 ## ✨ Features
 
 - 🎤 **Qwen3-TTS voice cloning** on [Candle](https://github.com/huggingface/candle) (CPU, CUDA or Metal), consistent narrator via voice anchoring
-- 🧠 **LLM text analysis** with Llama 3.2 1B through [llama.cpp](https://github.com/ggml-org/llama.cpp): emotion spans, language, chapter and story titles, reading order of chapter files
+- 🔢 **Number normalization** for German (optional): numbers, years, dates, ordinals, times, money, units and abbreviations are spelled out before synthesis
+- 🧠 **Optional LLM** (Llama 3.2 1B through [llama.cpp](https://github.com/ggml-org/llama.cpp)): emotion spans, language, chapter and story titles, reading order of chapter files. Without it, titles come from headings and the reading order from file names
 - 🎨 **Desktop GUI** (egui) with project list, progress/ETA and live log, plus a **CLI** for headless use and Docker
 - ⚡ **Audio pipeline**: Butterworth clean-up filters, crossfades, sentence/paragraph pauses, WAV + MP3 export (LAME built in, no ffmpeg needed)
 - 🔍 **Quality audit** of generated chunks (speech ratio, loudness, clipping, MFCC voice match) with automatic regeneration
@@ -70,17 +71,19 @@ The binary is `target/release/text-to-audiobook` (`.exe` on Windows).
 GPU builds:
 
 ```bash
-cargo build --release --features cuda      # NVIDIA: Qwen3-TTS on the GPU, Llama on the CPU
-cargo build --release --features llm-cuda  # NVIDIA: additionally Llama on the GPU
-cargo build --release --features metal     # Apple Silicon
+cargo build --release --features cuda      # NVIDIA: Qwen3-TTS on the GPU
+cargo build --release --features llm-cuda  # NVIDIA: additionally Llama (llama.cpp) on the GPU
+cargo build --release --features metal     # Apple Silicon (includes the LLM)
 ```
 
-`cuda` is enough with the default `LLM_GPU_LAYERS = 0`. `llm-cuda` links CUDA statically into llama.cpp and needs the static CUDA libraries (`libcudart_static.a`, `libcublas_static.a`, `libcublasLt_static.a`, `libculibos.a`) in `/usr/local/cuda`, `/opt/cuda` or the directory given in `CUDA_LIBRARY_PATH`.
+The LLM is optional and not built by default. To use it (`USE_LLM = true`), add the `llm` feature, e.g. `cargo build --release --features llm` or `--features cuda,llm`; llama.cpp then runs on the CPU.
+
+With `llm`, `cuda` is enough for the default `LLM_GPU_LAYERS = 0`. `llm-cuda` links CUDA statically into llama.cpp and needs the static CUDA libraries (`libcudart_static.a`, `libcublas_static.a`, `libcublasLt_static.a`, `libculibos.a`) in `/usr/local/cuda`, `/opt/cuda` or the directory given in `CUDA_LIBRARY_PATH`.
 
 Headless build without GUI (servers, Docker):
 
 ```bash
-cargo build --release --no-default-features --features llm,tts
+cargo build --release --no-default-features --features tts       # add ,llm for the LLM
 ```
 
 ### Hugging Face token (optional)
@@ -93,7 +96,7 @@ set HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxx     # Windows CMD
 $env:HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxxxx"  # Windows PowerShell
 ```
 
-- Llama-3.2-1B-Instruct (Q4_K_M GGUF) → `models/`
+- Llama-3.2-1B-Instruct (Q4_K_M GGUF) → `models/` (only with `USE_LLM = true`)
 - Qwen3-TTS (0.6B or 1.7B Base) → Hugging Face cache (`HF_HOME`, default `~/.cache/huggingface`). Models already downloaded by the Python version are reused.
 
 `TTS_MODEL_NAME` may also point to a local model directory.
@@ -126,6 +129,7 @@ text-to-audiobook assemble                 # stage 4
 text-to-audiobook projects                 # list projects and cache state
 text-to-audiobook fix-languages            # re-check language outliers
 text-to-audiobook voice-ref                # regenerate the voice reference
+text-to-audiobook normalize "Am 3. Mai 1995 um 14:30 Uhr"   # preview NORMALIZE_NUMBERS
 text-to-audiobook --mock-models run        # dry run without models (silence)
 ```
 
@@ -133,7 +137,7 @@ text-to-audiobook --mock-models run        # dry run without models (silence)
 
 ## Input Format
 
-Every subfolder of `input/` is one project (book), every loose `.md` file is a project of its own. Inside a folder, the reading order follows numeric prefixes (`0_Prologue.md`, `10_Chapter.md`) or is determined by the LLM from names and content (ordinal words, prologue/epilogue). Supported Markdown:
+Every subfolder of `input/` is one project (book), every loose `.md` file is a project of its own. Inside a folder, the reading order follows numeric prefixes (`0_Prologue.md`, `10_Chapter.md`). Otherwise names are sorted naturally with number words recognised (`Chapter_Two` after `Chapter_One`, `Kapitel_drei`), front matter (prologue, Vorwort, Einleitung, …) first and back matter (epilogue, Nachwort, Anhang, …) last; with `USE_LLM = true` the LLM decides from names and content. The first heading of each file becomes its chapter title, the project name the story title. Supported Markdown:
 
 - Headers (`#`, `##`, etc.) — stripped
 - **Bold**, *italic*, `inline code` — formatting removed, text preserved
@@ -164,7 +168,7 @@ Edit `settings.json` in the project root or use the settings window. Keys and de
 |---|---|---|
 | `MAX_WORDS_PER_CHUNK` | 499 | words per text chunk (chunks never cross paragraphs) |
 | `TTS_MODEL_NAME` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Base model id or local directory |
-| `TTS_LANGUAGE` | `german` | fixed TTS language, `auto` = per-segment LLM detection |
+| `TTS_LANGUAGE` | `german` | fixed TTS language; `auto` = per-segment detection (LLM, or Qwen3-TTS itself without LLM) |
 | `TTS_DTYPE` | `bfloat16` | GPU precision (`bfloat16` falls back to `float16`), CPU always float32 |
 | `TTS_MAX_TOKENS` | 100 | token limit per TTS call; longer segments become sub-parts |
 | `TTS_MAX_WORDS_FALLBACK` | 100 | same limit in words when no tokenizer is available |
@@ -173,6 +177,8 @@ Edit `settings.json` in the project root or use the settings window. Keys and de
 | `CROSSFADE_MS` | 80 | crossfade between chunks |
 | `SILENCE_AFTER_PERIOD_MS` | 500 | pause after a segment |
 | `SILENCE_AFTER_PARAGRAPH_MS` | 1200 | pause after a paragraph |
+| `NORMALIZE_NUMBERS` | false | spell out numbers, dates, times, units, abbreviations (German segments) |
+| `USE_LLM` | false | use Llama in stage 1 (emotion spans, titles, file order, `auto` language); needs the `llm` feature |
 | `LLM_GPU_LAYERS` | 0 | Llama layers on the GPU (0 = CPU, -1 = all) |
 | `LLM_MAX_RETRIES` | 3 | attempts per LLM call |
 | `STORAGE_BACKEND` | `json` | `json` or `sqlite` |
@@ -199,27 +205,28 @@ cargo clippy --all-targets
 | Module | Role |
 |---|---|
 | `markdown_cleaner`, `chunker` | Markdown → plain text → paragraph-aligned chunks |
-| `llm` | Llama 3.2 via llama.cpp (`llama-cpp-2`), JSON-only prompts with validation and retries |
+| `llm` | optional Llama 3.2 via llama.cpp (`llama-cpp-2`), JSON-only prompts with validation and retries; rule-based fallbacks |
+| `normalize_de` | German number/date/unit/abbreviation normalization |
 | `storage` | JSON or SQLite cache per project |
 | `tts` | Qwen3-TTS via Candle (`qwen_tts`), voice anchoring, sub-parts, ID3 tags |
 | `audio` | WAV I/O, Butterworth filters, assembler (WAV + MP3), quality audit, MFCC |
 | `pipeline` | stages 1–4, project discovery, chapter assembly |
 | `gui`, `main` | egui desktop app and CLI |
 
-### Stage 1: Text analysis
-1. Discover projects → order files → clean Markdown → split into chunks
-2. Load **Llama-3.2-1B-Instruct** (4-bit GGUF)
-3. Project language: fixed (`TTS_LANGUAGE`) or majority vote over the first 10 chunks
-4. Per chunk: emotion spans by sentence number (the LLM returns only index ranges, so it cannot alter the text); cached
-5. Spans over the word budget are re-chunked; story title, chapter info and speaking speed are detected; final segments are cached
-6. Unload the LLM
+### Stage 1: Text preparation
+1. Discover projects → order files → clean Markdown → split into paragraph-aligned chunks
+2. Story title from the project name, chapter titles from the first heading of each file
+3. Segments are cached; interrupted runs resume
+
+With `USE_LLM = true`, **Llama-3.2-1B-Instruct** (4-bit GGUF) additionally orders files by content, votes on the project language (`TTS_LANGUAGE = auto`), splits chunks into emotion spans by sentence number (it returns only index ranges, so it cannot alter the text) and looks for story and chapter titles. Qwen3-TTS Base models take no emotion input, so the emotion spans only change where segments are cut.
 
 ### Stage 2: Audio generation
 1. Load **Qwen3-TTS** (0.6B or 1.7B Base); create `cache/voice_reference.wav` if missing
-2. Chunk 0 clones the voice reference → becomes the **anchor**
-3. Every later chunk clones the anchor (x-vector voice cloning), same seed each time
-4. Denoise each chunk (high-pass 60 Hz, low-pass 9 kHz)
-5. Join with crossfades and pauses, export WAV + MP3
+2. With `NORMALIZE_NUMBERS`, German text gets numbers, dates and abbreviations spelled out
+3. Chunk 0 clones the voice reference → becomes the **anchor**
+4. Every later chunk clones the anchor (x-vector voice cloning), same seed each time
+5. Denoise each chunk (high-pass 60 Hz, low-pass 9 kHz)
+6. Join with crossfades and pauses, export WAV + MP3
 
 ### Voice Anchoring
 The narrator voice is locked after the first chunk. Every following chunk uses that audio as voice reference, which keeps the speaker identity stable across the whole book. For your own narrator, put a 10–15 s recording at `cache/voice_reference.wav` (see [FORK_DE.md](FORK_DE.md)).
@@ -227,6 +234,8 @@ The narrator voice is locked after the first chunk. Every following chunk uses t
 ## Differences from the Python version
 
 - **One binary**, no Python, PyTorch or ffmpeg installation. Models: llama.cpp for Llama (same GGUF file), Candle for Qwen3-TTS (same Hugging Face checkpoints, shared cache).
+- **LLM optional and off by default** (`USE_LLM`): titles from headings and the project name, reading order from file names. To get the Python behaviour back, build with `--features llm` and set `USE_LLM = true`.
+- **Number normalization** (`NORMALIZE_NUMBERS`, German) is new; the Python version's LLM-based normalization was disabled.
 - **CLI and Docker** run the pipeline headless; the GUI is optional (feature `gui`).
 - **Chapter order:** stage 2 and stage 4 number and join chapters in reading order. The Python version sorted chapters alphabetically, so `10_…` came before `2_…`.
 - **Voice-match check is active:** the MFCC check in stage 3 needed librosa, which was not a dependency, so the Python version skipped it. The Rust version computes the same MFCCs natively.
