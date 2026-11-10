@@ -45,10 +45,21 @@ Programm bauen, ohne Grafikkarte:
 cargo build --release
 ```
 
-Mit NVIDIA-Grafikkarte (CUDA-Toolkit mit `nvcc` nötig):
+Mit NVIDIA-Grafikkarte (CUDA-Toolkit mit `nvcc` nötig). Damit rechnet die Sprachausgabe
+auf der GPU, Llama wie vorgesehen auf der CPU (`LLM_GPU_LAYERS = 0`):
 
 ```bash
 cargo build --release --features cuda
+```
+
+Soll auch Llama auf die GPU, mit `--features llm-cuda` bauen. llama.cpp bindet CUDA dann
+statisch ein und braucht `libcudart_static.a`, `libcublas_static.a`, `libcublasLt_static.a`
+und `libculibos.a`. Gesucht wird in `/usr/local/cuda`, `/opt/cuda` oder im Ordner aus
+`CUDA_LIBRARY_PATH`. Bei den Debian-Paketen liegen sie, falls installiert, meist unter
+`/usr/lib/x86_64-linux-gnu`:
+
+```bash
+CUDA_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu cargo build --release --features llm-cuda
 ```
 
 Das CUDA-Toolkit darf nicht neuer sein als die CUDA-Version des Treibers. Beim Treiber 550
@@ -148,6 +159,8 @@ Zwischenstände der Python-Version dieses Forks bleiben gültig. Die Referenzsti
 
 ## Fehlerbehebung
 
+- **„could not find native static library `cudart_static`“ beim Bauen:** mit
+  `--features cuda` statt `llm-cuda` bauen (siehe Installation).
 - **„CUDA unknown error“ nach Standby:** das Kernelmodul neu laden oder neu starten:
   `sudo rmmod nvidia_uvm && sudo modprobe nvidia_uvm`
 - **„CUDA out of memory“:** beim 0.6B-Modell bleiben und andere Programme schließen, die
