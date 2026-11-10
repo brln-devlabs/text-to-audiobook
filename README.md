@@ -1,5 +1,7 @@
 # text-to-audiobook - Advanced Text-to-Speech Application
 
+> **Fork:** angepasst für deutsche Texte, Absatzpausen und GPUs mit 4 GB VRAM. Details und Installationshinweise: [FORK_DE.md](FORK_DE.md)
+
 A powerful, open-source text-to-speech application powered by state-of-the-art AI models. This project combines the Qwen3-TTS model with intelligent text processing to deliver high-quality, natural-sounding audio generation with a modern desktop interface.
 
 ## ✨ Features

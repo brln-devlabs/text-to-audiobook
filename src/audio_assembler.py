@@ -14,6 +14,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import logging
+import re
 from pathlib import Path
 
 try:
@@ -24,6 +25,46 @@ except ImportError:
 from . import config
 
 logger = logging.getLogger(__name__)
+
+# chunk_000012.wav (single part) or chunk_000012_3.wav (sub-part 3 of chunk 12)
+_CHUNK_NAME_RE = re.compile(r"^chunk_(\d+)(?:_(\d+))?$")
+
+
+def _ends_paragraph(meta) -> bool:
+    if isinstance(meta, dict):
+        return bool(meta.get("ends_paragraph", False))
+    return bool(getattr(meta, "ends_paragraph", False))
+
+
+def _silence_plan(chunk_wavs: list, chunk_meta: list) -> list:
+    """Silence (ms, or None) to insert after each WAV.
+
+    One segment can be synthesized as several sub-part WAVs
+    (chunk_NNN_0.wav, chunk_NNN_1.wav, ...). Consecutive WAVs of the same
+    chunk form one group, and group k belongs to chunk_meta[k]. Between
+    sub-parts of a group the sentence pause is used; after the last part the
+    paragraph pause if the segment ends a paragraph. WAVs whose names do not
+    follow the chunk pattern are treated as one group each.
+    """
+    keys = []
+    for pos, wav in enumerate(chunk_wavs):
+        m = _CHUNK_NAME_RE.match(Path(wav).stem)
+        keys.append(int(m.group(1)) if m else ("pos", pos))
+
+    plan = []
+    group = -1
+    for i, key in enumerate(keys):
+        if i == 0 or key != keys[i - 1]:
+            group += 1
+        if group >= len(chunk_meta):
+            plan.append(None)
+            continue
+        last_of_group = i == len(keys) - 1 or keys[i + 1] != key
+        if last_of_group and _ends_paragraph(chunk_meta[group]):
+            plan.append(config.SILENCE_AFTER_PARAGRAPH_MS)
+        else:
+            plan.append(config.SILENCE_AFTER_PERIOD_MS)
+    return plan
 
 
 def assemble(chunk_wavs: list[Path], chunk_meta: list, out_path: Path) -> Path:
@@ -38,6 +79,7 @@ def assemble(chunk_wavs: list[Path], chunk_meta: list, out_path: Path) -> Path:
 
     try:
         combined = None
+        silence_plan = _silence_plan(chunk_wavs, chunk_meta)
 
         for i, wav_path in enumerate(chunk_wavs):
             logger.debug(f"Loading chunk {i}: {wav_path}")
@@ -48,18 +90,8 @@ def assemble(chunk_wavs: list[Path], chunk_meta: list, out_path: Path) -> Path:
             else:
                 combined = combined.append(audio, crossfade=config.CROSSFADE_MS)
 
-            if i < len(chunk_meta):
-                meta = chunk_meta[i]
-                ends_paragraph = (
-                    meta.get("ends_paragraph", False)
-                    if isinstance(meta, dict)
-                    else getattr(meta, "ends_paragraph", False)
-                )
-                silence_ms = (
-                    config.SILENCE_AFTER_PARAGRAPH_MS
-                    if ends_paragraph
-                    else config.SILENCE_AFTER_PERIOD_MS
-                )
+            silence_ms = silence_plan[i]
+            if silence_ms is not None:
                 silence = AudioSegment.silent(duration=silence_ms)
                 combined = combined.append(silence)
 

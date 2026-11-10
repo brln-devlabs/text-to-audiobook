@@ -50,3 +50,32 @@ def test_assemble_silence_gaps(tmp_path):
     result = assemble(chunk_wavs, chunk_meta, out_path)
 
     assert result is not None
+
+
+def test_silence_plan_handles_sub_parts():
+    """Sub-parts of one segment get the sentence pause between them, and the
+    paragraph pause only after the last part of a paragraph-ending segment."""
+    from src import config
+    from src.audio_assembler import _silence_plan
+
+    wavs = [
+        Path("chunk_000000.wav"),
+        Path("chunk_000001_0.wav"),
+        Path("chunk_000001_1.wav"),
+        Path("chunk_000001_2.wav"),
+        Path("chunk_000002.wav"),
+    ]
+    meta = [
+        {"ends_paragraph": True},
+        {"ends_paragraph": True},
+        {"ends_paragraph": False},
+    ]
+    para = config.SILENCE_AFTER_PARAGRAPH_MS
+    period = config.SILENCE_AFTER_PERIOD_MS
+    assert _silence_plan(wavs, meta) == [para, period, period, para, period]
+
+
+def test_silence_plan_without_meta_adds_nothing():
+    from src.audio_assembler import _silence_plan
+
+    assert _silence_plan([Path("a.wav"), Path("b.wav")], []) == [None, None]

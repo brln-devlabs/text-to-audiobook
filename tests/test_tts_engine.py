@@ -162,8 +162,12 @@ def test_synthesize_mock_mode_writes_silence(tmp_path):
     assert result[0].exists()
 
 
-def test_process_all_passes_per_segment_language(fake_wrapper_cls, tmp_path):
-    """Language from the segment payload must reach the voice generation calls."""
+def test_process_all_passes_per_segment_language(
+    fake_wrapper_cls, tmp_path, monkeypatch
+):
+    """With TTS_LANGUAGE="auto", the segment payload language must reach the
+    voice generation calls."""
+    monkeypatch.setattr(config, "TTS_LANGUAGE", "auto")
     engine = TTSEngine()
     engine.load()
     payloads = [
@@ -182,7 +186,10 @@ def test_process_all_passes_per_segment_language(fake_wrapper_cls, tmp_path):
     assert clone_calls[2].kwargs["language"] == "french"
 
 
-def test_process_all_defaults_language_when_missing(fake_wrapper_cls, tmp_path):
+def test_process_all_defaults_language_when_missing(
+    fake_wrapper_cls, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(config, "TTS_LANGUAGE", "auto")
     engine = TTSEngine()
     engine.load()
     payloads = [{"normalized_text": "No lang field."}]
@@ -190,3 +197,19 @@ def test_process_all_defaults_language_when_missing(fake_wrapper_cls, tmp_path):
     _, wrapper = fake_wrapper_cls
     call = wrapper.generate_voice_clone.call_args_list[0]
     assert call.kwargs["language"] == TTSEngine.DEFAULT_LANGUAGE
+
+
+def test_process_all_uses_fixed_language(fake_wrapper_cls, tmp_path, monkeypatch):
+    """A fixed TTS_LANGUAGE overrides whatever the LLM detected per segment."""
+    monkeypatch.setattr(config, "TTS_LANGUAGE", "german")
+    engine = TTSEngine()
+    engine.load()
+    payloads = [
+        {"normalized_text": "Erster Satz.", "language": "english"},
+        {"normalized_text": "Zweiter Satz.", "language": "japanese"},
+        {"normalized_text": "Dritter Satz."},
+    ]
+    engine.process_all(payloads, tmp_path / "out")
+    _, wrapper = fake_wrapper_cls
+    languages = [c.kwargs["language"] for c in wrapper.generate_voice_clone.call_args_list]
+    assert languages == ["german", "german", "german"]

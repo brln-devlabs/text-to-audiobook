@@ -131,7 +131,7 @@ def test_llm_load_mock_mode_when_llama_missing():
 
 
 def test_config_has_expected_constants():
-    assert config.TTS_MODEL_NAME == "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+    assert config.TTS_MODEL_NAME == "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
     assert config.SAMPLE_RATE == 24000
     assert config.LLM_MODEL_PATH.parent.exists()
     assert config.NARRATOR_PROMPT.strip() != ""

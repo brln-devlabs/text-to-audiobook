@@ -41,6 +41,8 @@ except ImportError:
     llama_cpp: Any = None  # type: ignore[no-redef]
     hf_hub_download: Any = None  # type: ignore[no-redef]
 
+from . import config
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,7 +88,7 @@ class LLMNormalizer:
             self.llm = llama_cpp.Llama(
                 model_path=model_path,
                 n_ctx=4096,
-                n_gpu_layers=-1,
+                n_gpu_layers=getattr(config, "LLM_GPU_LAYERS", -1),
                 verbose=False,
             )
         except Exception as e:
@@ -1168,7 +1170,14 @@ class LLMNormalizer:
         # independent detections is reliable. The script-gate inside
         # detect_language already filters obvious script contradictions.
         project_language = None
-        if chunks:
+        fixed_language = (
+            str(getattr(config, "TTS_LANGUAGE", "auto") or "auto").strip().lower()
+        )
+        if chunks and fixed_language != "auto":
+            # Language fixed in the settings: no need to ask the LLM.
+            project_language = fixed_language
+            report(f"[A] project language: {project_language} (fixed in settings)")
+        elif chunks:
             from collections import Counter
 
             votes: list[str] = []

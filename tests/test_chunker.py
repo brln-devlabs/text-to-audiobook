@@ -62,3 +62,43 @@ def test_very_long_sentence():
     long_sentence = "This is a very long sentence that contains many words " * 30 + "."
     chunks = split_to_chunks(long_sentence, max_words=50)
     assert len(chunks) > 0
+
+
+def test_chunks_never_span_paragraphs():
+    text = "Erster Absatz. Noch ein Satz.\n\nZweiter Absatz.\n\nDritter Absatz. Ende."
+    chunks = split_to_chunks(text, max_words=499)
+    assert [c.text for c in chunks] == [
+        "Erster Absatz. Noch ein Satz.",
+        "Zweiter Absatz.",
+        "Dritter Absatz. Ende.",
+    ]
+    assert all(c.ends_paragraph for c in chunks)
+
+
+def test_long_paragraph_only_last_chunk_ends_paragraph():
+    paragraph = " ".join(f"Satz Nummer {i} hat fünf Wörter." for i in range(20))
+    chunks = split_to_chunks(paragraph + "\n\nKurz.", max_words=20)
+    assert len(chunks) > 2
+    *first_para, last_of_para, short = chunks
+    assert not any(c.ends_paragraph for c in first_para)
+    assert last_of_para.ends_paragraph
+    assert short.text == "Kurz." and short.ends_paragraph
+    for c in chunks:
+        assert len(c.text.split()) <= 20
+
+
+def test_german_sentence_starts_are_split():
+    """Sentences starting with umlauts or German quotes are sentence starts."""
+    text = "Erster Satz. Über alles. „Zitat“, sagte er. Ärger folgt."
+    chunks = split_to_chunks(text, max_words=3)
+    assert [c.text for c in chunks] == [
+        "Erster Satz.",
+        "Über alles.",
+        "„Zitat“, sagte er.",
+        "Ärger folgt.",
+    ]
+
+
+def test_line_breaks_inside_paragraph_are_joined():
+    chunks = split_to_chunks("Eine Zeile\nund die nächste.")
+    assert [c.text for c in chunks] == ["Eine Zeile und die nächste."]

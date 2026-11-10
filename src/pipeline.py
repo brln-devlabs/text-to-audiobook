@@ -283,6 +283,30 @@ def prepare_segments(
     return results
 
 
+_CHUNK_WAV_RE = re.compile(r"^chunk_(\d+)(?:_(\d+))?$")
+
+
+def _wavs_for_segments(wav_paths: list, seg_indices: list) -> list:
+    """All WAVs (including sub-parts chunk_NNN_K.wav) of the given segments.
+
+    Segment i is synthesized as chunk_{i:06d}.wav or as several sub-parts
+    chunk_{i:06d}_0.wav, _1.wav, ..., so WAV list positions do not match
+    segment indices once any segment was split. WAVs with other names fall
+    back to positional matching.
+    """
+    by_chunk: dict = {}
+    positional = []
+    for wav in wav_paths:
+        m = _CHUNK_WAV_RE.match(Path(wav).stem)
+        if m:
+            by_chunk.setdefault(int(m.group(1)), []).append(wav)
+        else:
+            positional.append(wav)
+    if not by_chunk:
+        return [positional[i] for i in seg_indices if i < len(positional)]
+    return [w for i in seg_indices for w in by_chunk.get(i, [])]
+
+
 def _assemble_chapters(
     wav_paths: list,
     segments: list,
@@ -310,7 +334,7 @@ def _assemble_chapters(
     if len(by_source) == 1:
         source_name = list(by_source.keys())[0]
         seg_indices = [i for i, _ in by_source[source_name]]
-        chapter_wavs = [wav_paths[i] for i in seg_indices if i < len(wav_paths)]
+        chapter_wavs = _wavs_for_segments(wav_paths, seg_indices)
         if chapter_wavs:
             assembled = assemble(
                 chapter_wavs,
@@ -324,7 +348,7 @@ def _assemble_chapters(
         progress(f"[{project_name}] {len(sorted_sources)} chapter(s) detected")
         for chapter_num, source_name in enumerate(sorted_sources, start=1):
             seg_indices = [i for i, _ in by_source[source_name]]
-            chapter_wavs = [wav_paths[i] for i in seg_indices if i < len(wav_paths)]
+            chapter_wavs = _wavs_for_segments(wav_paths, seg_indices)
             if not chapter_wavs:
                 progress(f"  chapter {chapter_num} ({source_name}): no WAVs found")
                 continue
@@ -798,7 +822,7 @@ def assemble_final_for_project(
         all_segs = []
         for source_name in sorted(by_source.keys()):
             seg_indices = [i for i, _ in by_source[source_name]]
-            chapter_wavs = [wav_files[i] for i in seg_indices if i < len(wav_files)]
+            chapter_wavs = _wavs_for_segments(wav_files, seg_indices)
             all_wavs.extend(chapter_wavs)
             all_segs.extend([seg for _, seg in by_source[source_name]])
         if all_wavs:
@@ -811,7 +835,7 @@ def assemble_final_for_project(
         progress(f"[{project_name}] {len(sorted_sources)} chapter(s) detected")
         for chapter_num, source_name in enumerate(sorted_sources, start=1):
             seg_indices = [i for i, _ in by_source[source_name]]
-            chapter_wavs = [wav_files[i] for i in seg_indices if i < len(wav_files)]
+            chapter_wavs = _wavs_for_segments(wav_files, seg_indices)
             if not chapter_wavs:
                 progress(f"  chapter {chapter_num} ({source_name}): no WAVs found")
                 continue

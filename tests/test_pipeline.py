@@ -72,3 +72,18 @@ def test_prepare_segments_empty_selection_returns_empty(tmp_path):
     output_dir = tmp_path / "output"
     results = prepare_segments(input_dir, output_dir, selected_names=[])
     assert results == {}
+
+
+def test_wavs_for_segments_includes_sub_parts():
+    from pathlib import Path
+
+    from src.pipeline import _wavs_for_segments
+
+    wavs = [
+        Path("chunk_000000.wav"),
+        Path("chunk_000001_0.wav"),
+        Path("chunk_000001_1.wav"),
+        Path("chunk_000002.wav"),
+    ]
+    assert _wavs_for_segments(wavs, [1, 2]) == wavs[1:]
+    assert _wavs_for_segments(wavs, [0]) == wavs[:1]

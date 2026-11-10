@@ -47,11 +47,43 @@ logger = logging.getLogger(__name__)
 
 _MAX_SUB_PARTS = 10
 
-# Short fixed text used to generate the voice reference WAV via VoiceDesign.
-_VOICE_REF_TEXT = (
-    "In the grim darkness of the far future, there is only war. "
-    "The Imperium endures, as it always has, through blood and iron."
-)
+# Short fixed texts used to generate the voice reference WAV when none exists.
+_VOICE_REF_TEXTS = {
+    "english": (
+        "This is a short voice sample. It defines how the narrator "
+        "will sound throughout the entire audiobook."
+    ),
+    "german": (
+        "Dies ist eine kurze Sprachprobe. Sie legt fest, wie die Stimme "
+        "des Erzählers im ganzen Hörbuch klingen wird."
+    ),
+}
+
+
+def resolve_language(segment_language: str | None = None) -> str:
+    """Language for Qwen3-TTS: config.TTS_LANGUAGE, or the segment's own
+    detected language when TTS_LANGUAGE is "auto"."""
+    fixed = str(getattr(config, "TTS_LANGUAGE", "auto") or "auto").strip().lower()
+    if fixed != "auto":
+        return fixed
+    return segment_language or TTSEngine.DEFAULT_LANGUAGE
+
+
+def _resolve_dtype():
+    """torch dtype for GPU loading from config.TTS_DTYPE (bf16 -> fp16 fallback)."""
+    name = str(getattr(config, "TTS_DTYPE", "bfloat16")).strip().lower()
+    if name == "bfloat16":
+        try:
+            if not torch.cuda.is_bf16_supported():
+                logger.warning("GPU has no bfloat16 support, falling back to float16")
+                name = "float16"
+        except Exception:
+            pass
+    dtype = getattr(torch, name, None)
+    if dtype is None:
+        logger.warning(f"Unknown TTS_DTYPE '{name}', using bfloat16")
+        dtype = torch.bfloat16
+    return dtype
 
 
 class TTSEngine:
@@ -76,7 +108,7 @@ class TTSEngine:
         kwargs = {"trust_remote_code": True}
         if torch is not None and torch.cuda.is_available():
             kwargs["device_map"] = "auto"
-            kwargs["dtype"] = torch.float16
+            kwargs["dtype"] = _resolve_dtype()
         else:
             kwargs["device_map"] = "cpu"
         return kwargs
@@ -98,9 +130,10 @@ class TTSEngine:
                     logger.debug(f"torch.compile not available or failed: {e}")
 
             self._set_seed()
+            ref_language = resolve_language("english")
             wavs, sr = engine.generate(
-                text=_VOICE_REF_TEXT,
-                language="english",
+                text=_VOICE_REF_TEXTS.get(ref_language, _VOICE_REF_TEXTS["english"]),
+                language=ref_language,
                 temperature=0.3,
                 top_p=0.9,
             )
@@ -646,7 +679,7 @@ class TTSEngine:
                 continue
 
             text = payload.get("normalized_text", "")
-            language = payload.get("language") or self.DEFAULT_LANGUAGE
+            language = resolve_language(payload.get("language"))
 
             try:
                 if i == 0:

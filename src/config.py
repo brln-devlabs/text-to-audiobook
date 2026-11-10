@@ -38,6 +38,19 @@ TTS_MAX_WORDS_FALLBACK = 100
 CHAPTER_BY_CHAPTER = False
 VOCALIZE_CHAPTER_NAMES = False
 
+# Language passed to Qwen3-TTS for every segment. "auto" restores the upstream
+# behaviour (per-segment language from the LLM's detection). A fixed language
+# avoids mispronunciation when the small LLM mislabels a chunk, and skips the
+# 10 LLM language probes in Stage 1.
+TTS_LANGUAGE = "german"
+# Precision for the TTS model on GPU: "bfloat16" (recommended, falls back to
+# float16 on GPUs without bf16 support), "float16" or "float32". float16 can
+# produce NaNs in Qwen3-TTS sampling ("device-side assert triggered").
+TTS_DTYPE = "bfloat16"
+# Layers of the Llama helper model offloaded to the GPU: 0 = CPU only (keeps
+# VRAM free for TTS on small GPUs), -1 = all layers on the GPU.
+LLM_GPU_LAYERS = 0
+
 LOG_LEVEL_CONSOLE = "INFO"
 LOG_LEVEL_FILE = "DEBUG"
 
@@ -45,16 +58,15 @@ LLM_MAX_RETRIES = 3
 STORAGE_BACKEND = "json"
 
 NARRATOR_PROMPT = (
-    "A deep, gravelly, battle-hardened male narrator. "
-    "Voice like grinding ceramite and distant artillery — low, resonant, unhurried. "
-    "The measured cadence of one who has witnessed ten thousand years of endless war and finds it unremarkable. "
-    "Every word carries the grim weight of the Imperium of Mankind, scarred by countless campaigns. "
-    "Speak slowly, with ominous authority, as if reading from the annals of the Adeptus Historica."
+    "A calm, clear and warm narrator voice. "
+    "Speaks at a measured, unhurried pace with natural intonation, "
+    "like an experienced audiobook reader presenting a non-fiction text."
 )
 
 LLM_MODEL_NAME = "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 LLM_MODEL_PATH = MODELS_DIR / LLM_MODEL_NAME
-TTS_MODEL_NAME = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+# 0.6B fits GPUs with 4 GB VRAM; use "Qwen/Qwen3-TTS-12Hz-1.7B-Base" with ~6 GB+.
+TTS_MODEL_NAME = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
 TTS_VOICE_DESIGN_MODEL_NAME = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
 VOICE_REF_PATH = CACHE_DIR / "voice_reference.wav"
 
@@ -81,6 +93,10 @@ _SETTINGS_KEYS = {
     "TTS_MAX_WORDS_FALLBACK": int,
     "CHAPTER_BY_CHAPTER": bool,
     "VOCALIZE_CHAPTER_NAMES": bool,
+    "TTS_LANGUAGE": str,
+    "TTS_DTYPE": str,
+    "LLM_GPU_LAYERS": int,
+    "TTS_MODEL_NAME": str,
 }
 
 # Snapshot the values defined above as the single source of truth for

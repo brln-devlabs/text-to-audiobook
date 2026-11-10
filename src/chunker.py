@@ -24,47 +24,73 @@ class Chunk:
     source_file: str = "default"
 
 
+# Paragraphs are separated by one or more blank lines.
+_PARAGRAPH_RE = re.compile(r"\n\s*\n")
+
+# Sentence boundary: text ending in end punctuation (optionally followed by
+# closing quotes/brackets), then whitespace, then something that can start a
+# sentence. Covers German umlauts and German/French quotes as well as ASCII.
+_WS_RE = re.compile(r"\s+")
+_SENTENCE_END_RE = re.compile(r"[.!?…][\"'“”»«’)\]]*$")
+_SENTENCE_START_RE = re.compile(r"[A-ZÄÖÜ0-9\"'„“»«‚(\[]")
+
+
+def _split_sentences(paragraph: str) -> list[str]:
+    sentences: list[str] = []
+    start = 0
+    for ws in _WS_RE.finditer(paragraph):
+        before = paragraph[start : ws.start()]
+        after = paragraph[ws.end() : ws.end() + 1]
+        if after and _SENTENCE_END_RE.search(before) and _SENTENCE_START_RE.match(after):
+            sentences.append(before.strip())
+            start = ws.end()
+    tail = paragraph[start:].strip()
+    if tail:
+        sentences.append(tail)
+    return [s for s in sentences if s]
+
+
 def split_to_chunks(
     text: str, max_words: int = 499, source_file: str = "default"
 ) -> list[Chunk]:
-    sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z"\'])', text)
-    sentences = [s.strip() for s in sentences if s.strip()]
+    """Split text into chunks of at most ``max_words`` words.
 
-    chunks = []
-    current_chunk: list[str] = []
-    current_words = 0
+    Chunks never span a paragraph break, so every paragraph ends a chunk and
+    the last chunk of each paragraph is flagged ``ends_paragraph=True``. The
+    assembler uses that flag to insert the longer paragraph pause. Within a
+    paragraph, sentences are packed greedily; a single sentence longer than
+    ``max_words`` is kept whole (splitting mid-sentence damages prosody).
+    """
+    result: list[Chunk] = []
 
-    for i, sentence in enumerate(sentences):
-        words = len(sentence.split())
+    for paragraph in _PARAGRAPH_RE.split(text):
+        # Line breaks inside a paragraph are just wrapping.
+        paragraph = " ".join(paragraph.split())
+        if not paragraph:
+            continue
 
-        if current_words + words > max_words and current_chunk:
-            chunks.append((current_chunk, False))
-            current_chunk = [sentence]
-            current_words = words
-        else:
-            current_chunk.append(sentence)
-            current_words += words
+        packed: list[str] = []
+        current: list[str] = []
+        current_words = 0
+        for sentence in _split_sentences(paragraph):
+            words = len(sentence.split())
+            if current and current_words + words > max_words:
+                packed.append(" ".join(current))
+                current = [sentence]
+                current_words = words
+            else:
+                current.append(sentence)
+                current_words += words
+        if current:
+            packed.append(" ".join(current))
 
-    if current_chunk:
-        chunks.append((current_chunk, False))
-
-    paragraphs = text.split("\n\n")
-    para_texts = [p.strip() for p in paragraphs if p.strip()]
-
-    result = []
-    for chunk_text_list, _ in chunks:
-        chunk_text = " ".join(chunk_text_list)
-        ends_para = False
-
-        for para in para_texts:
-            if chunk_text.rstrip() == para.rstrip() or para.endswith(
-                chunk_text.split()[-1] if chunk_text.split() else ""
-            ):
-                ends_para = True
-                break
-
-        result.append(
-            Chunk(text=chunk_text, ends_paragraph=ends_para, source_file=source_file)
-        )
+        for i, chunk_text in enumerate(packed):
+            result.append(
+                Chunk(
+                    text=chunk_text,
+                    ends_paragraph=(i == len(packed) - 1),
+                    source_file=source_file,
+                )
+            )
 
     return result
