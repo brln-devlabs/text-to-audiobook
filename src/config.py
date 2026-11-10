@@ -67,6 +67,26 @@ LLM_MODEL_NAME = "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 LLM_MODEL_PATH = MODELS_DIR / LLM_MODEL_NAME
 # 0.6B fits GPUs with 4 GB VRAM; use "Qwen/Qwen3-TTS-12Hz-1.7B-Base" with ~6 GB+.
 TTS_MODEL_NAME = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+# Base models offered in the GUI: display label -> Hugging Face model id.
+TTS_MODEL_CHOICES = {
+    "0.6B (4 GB+ VRAM)": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+    "1.7B (6 GB+ VRAM)": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+}
+# Languages supported by Qwen3-TTS, plus "auto" (per-segment LLM detection).
+TTS_LANGUAGE_CHOICES = [
+    "german",
+    "english",
+    "french",
+    "spanish",
+    "italian",
+    "portuguese",
+    "russian",
+    "chinese",
+    "japanese",
+    "korean",
+    "auto",
+]
+TTS_DTYPE_CHOICES = ["bfloat16", "float16", "float32"]
 TTS_VOICE_DESIGN_MODEL_NAME = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
 VOICE_REF_PATH = CACHE_DIR / "voice_reference.wav"
 
@@ -104,6 +124,19 @@ _SETTINGS_KEYS = {
 # attributes, but this dict stays pinned to the in-code defaults so
 # the GUI's "Reset to Defaults" button has something stable to read.
 _DEFAULTS: dict = {k: getattr(_sys.modules[__name__], k) for k in _SETTINGS_KEYS}
+
+
+def tts_model_label(model_id: str) -> str:
+    """GUI label for a TTS model id (the id itself if it is not a known choice)."""
+    for label, mid in TTS_MODEL_CHOICES.items():
+        if mid == model_id:
+            return label
+    return model_id
+
+
+def tts_model_id(label: str) -> str:
+    """TTS model id for a GUI label (labels that are not known pass through)."""
+    return TTS_MODEL_CHOICES.get(label, label)
 
 
 def get_default(key: str):

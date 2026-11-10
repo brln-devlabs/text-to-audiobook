@@ -129,6 +129,15 @@ class CollapsibleFrame(ctk.CTkFrame):
 # ---------------------------------------------------------------------------
 
 
+def _tts_model_choices() -> list:
+    """Labels for the TTS model menu, plus the current model if it is custom."""
+    labels = list(config.TTS_MODEL_CHOICES)
+    current = config.tts_model_label(config.TTS_MODEL_NAME)
+    if current not in labels:
+        labels.append(current)
+    return labels
+
+
 class SettingsWindow(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -147,7 +156,15 @@ class SettingsWindow(ctk.CTkToplevel):
                 anchor="w", pady=(12, 2)
             )
 
-        def _row(parent, key: str, label: str, default, entry_type="int", choices=None):
+        def _row(
+            parent,
+            key: str,
+            label: str,
+            default,
+            entry_type="int",
+            choices=None,
+            width=120,
+        ):
             row = ctk.CTkFrame(parent, fg_color="transparent")
             row.pack(fill="x", pady=3)
             ctk.CTkLabel(row, text=label, width=220, anchor="w").pack(side="left")
@@ -155,7 +172,7 @@ class SettingsWindow(ctk.CTkToplevel):
                 var = ctk.StringVar(value=str(default))
                 if choices is None:
                     choices = ["DEBUG", "INFO", "WARNING", "ERROR"]
-                w = ctk.CTkOptionMenu(row, values=choices, variable=var, width=120)
+                w = ctk.CTkOptionMenu(row, values=choices, variable=var, width=width)
                 w.pack(side="right")
                 self._fields[key] = var
             else:
@@ -183,6 +200,12 @@ class SettingsWindow(ctk.CTkToplevel):
             "LLM retry attempts (per call)",
             _cur("LLM_MAX_RETRIES"),
         )
+        _row(
+            frame,
+            "LLM_GPU_LAYERS",
+            "LLM GPU layers (0 = CPU, -1 = all)",
+            _cur("LLM_GPU_LAYERS"),
+        )
 
         _section("Storage")
         _row(
@@ -195,6 +218,31 @@ class SettingsWindow(ctk.CTkToplevel):
         )
 
         _section("TTS")
+        _row(
+            frame,
+            "TTS_MODEL_NAME",
+            "TTS model",
+            config.tts_model_label(_cur("TTS_MODEL_NAME")),
+            entry_type="choice",
+            choices=_tts_model_choices(),
+            width=170,
+        )
+        _row(
+            frame,
+            "TTS_LANGUAGE",
+            "Language",
+            _cur("TTS_LANGUAGE"),
+            entry_type="choice",
+            choices=list(config.TTS_LANGUAGE_CHOICES),
+        )
+        _row(
+            frame,
+            "TTS_DTYPE",
+            "Precision (GPU)",
+            _cur("TTS_DTYPE"),
+            entry_type="choice",
+            choices=list(config.TTS_DTYPE_CHOICES),
+        )
         _row(frame, "TTS_MAX_TOKENS", "Max tokens per chunk", _cur("TTS_MAX_TOKENS"))
         _row(
             frame,
@@ -288,12 +336,15 @@ class SettingsWindow(ctk.CTkToplevel):
             "LLM_MAX_RETRIES",
             "TTS_MAX_TOKENS",
             "TTS_MAX_WORDS_FALLBACK",
+            "LLM_GPU_LAYERS",
         }
         bool_keys = {"CHAPTER_BY_CHAPTER", "VOCALIZE_CHAPTER_NAMES"}
         settings = {}
         for key, var in self._fields.items():
             raw = var.get().strip()
-            if key in int_keys:
+            if key == "TTS_MODEL_NAME":
+                val = config.tts_model_id(raw)
+            elif key in int_keys:
                 try:
                     val = int(raw)
                 except ValueError:
@@ -325,6 +376,8 @@ class SettingsWindow(ctk.CTkToplevel):
                 val = defaults[key]
                 if key in ("CHAPTER_BY_CHAPTER", "VOCALIZE_CHAPTER_NAMES"):
                     var.set(str(val).lower())
+                elif key == "TTS_MODEL_NAME":
+                    var.set(config.tts_model_label(val))
                 else:
                     var.set(str(val))
         # Apply log levels right away so the running app reflects the reset.
@@ -533,6 +586,18 @@ class TTSApp:
         self._config_panel.grid(row=1, column=0, sticky="ew")
 
         self._quick_config_vars: dict[str, tk.StringVar] = {}
+
+        model_row = ctk.CTkFrame(self._config_panel.content, fg_color="transparent")
+        model_row.pack(fill="x", padx=4, pady=2)
+        ctk.CTkLabel(model_row, text="TTS model", anchor="w", width=180).pack(
+            side="left"
+        )
+        model_var = tk.StringVar(value=config.tts_model_label(config.TTS_MODEL_NAME))
+        self._quick_config_vars["TTS_MODEL_NAME"] = model_var
+        ctk.CTkOptionMenu(
+            model_row, values=_tts_model_choices(), variable=model_var, width=170
+        ).pack(side="right")
+
         _qc_defs = [
             ("MAX_WORDS_PER_CHUNK", "Max words / chunk"),
             ("TTS_MAX_TOKENS", "TTS max tokens / chunk"),
@@ -819,7 +884,10 @@ class TTSApp:
         settings = {}
         for key, var in self._quick_config_vars.items():
             try:
-                val = int(var.get()) if key in int_keys else var.get()
+                if key == "TTS_MODEL_NAME":
+                    val = config.tts_model_id(var.get())
+                else:
+                    val = int(var.get()) if key in int_keys else var.get()
                 setattr(config, key, val)
                 settings[key] = val
             except ValueError:

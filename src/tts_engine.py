@@ -91,11 +91,14 @@ class TTSEngine:
 
     def __init__(
         self,
-        model_name: str = config.TTS_MODEL_NAME,
-        voice_design_model_name: str = config.TTS_VOICE_DESIGN_MODEL_NAME,
+        model_name: str | None = None,
+        voice_design_model_name: str | None = None,
     ):
-        self.model_name = model_name
-        self.voice_design_model_name = voice_design_model_name
+        # Read config at call time so a model chosen in the GUI takes effect.
+        self.model_name = model_name or config.TTS_MODEL_NAME
+        self.voice_design_model_name = (
+            voice_design_model_name or config.TTS_VOICE_DESIGN_MODEL_NAME
+        )
         self.engine: Any = None
         self.anchor_path: Path | None = None
         self._voice_ref_path: Path | None = None

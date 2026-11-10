@@ -152,3 +152,25 @@ def test_tts_loads_real_qwen_model():
     )
     assert wrapper.model is not None
     assert wrapper.processor is not None
+
+
+def test_tts_model_label_round_trip():
+    for label, model_id in config.TTS_MODEL_CHOICES.items():
+        assert config.tts_model_label(model_id) == label
+        assert config.tts_model_id(label) == model_id
+    # Unknown/custom models pass through unchanged in both directions.
+    assert config.tts_model_label("my/custom-model") == "my/custom-model"
+    assert config.tts_model_id("my/custom-model") == "my/custom-model"
+
+
+def test_default_model_is_a_gui_choice():
+    assert config.TTS_MODEL_NAME in config.TTS_MODEL_CHOICES.values()
+
+
+def test_tts_engine_reads_model_at_runtime(monkeypatch):
+    """A model chosen in the GUI after import must be used by new engines."""
+    from src.tts_engine import TTSEngine
+
+    monkeypatch.setattr(config, "TTS_MODEL_NAME", "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
+    assert TTSEngine().model_name == "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+    assert TTSEngine("explicit/model").model_name == "explicit/model"

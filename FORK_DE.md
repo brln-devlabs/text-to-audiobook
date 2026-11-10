@@ -15,7 +15,10 @@ angepasst.
 - **Feste Sprache:** `TTS_LANGUAGE = "german"`. Qwen3-TTS spricht jeden Abschnitt deutsch,
   unabhängig davon, was das kleine Llama-Modell erkennt. Die zehn Spracherkennungs-Abfragen
   am Anfang entfallen. `"auto"` stellt das ursprüngliche Verhalten wieder her.
-- **Kleines Modell:** Standard ist `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (passt in 4 GB).
+- **Modellauswahl in der Oberfläche:** im Panel „Quick Config“ und unter „Settings → TTS“
+  zwischen 0.6B (ab 4 GB VRAM, Standard) und 1.7B (ab 6 GB VRAM) wählen. Unter
+  „Settings“ lassen sich dort auch Sprache und Rechengenauigkeit einstellen, unter „LLM“
+  die Zahl der Llama-Schichten auf der GPU.
 - **bfloat16 statt float16:** behebt den Absturz „CUDA error: device-side assert triggered“.
   Grafikkarten ohne bfloat16 fallen automatisch auf float16 zurück.
 - **Llama auf der CPU:** `LLM_GPU_LAYERS = 0` lässt den Grafikspeicher ganz für die
@@ -54,7 +57,8 @@ Eine frei verwendbare deutsche Stimme (CC0) gibt es im
 
 ## Einstellungen
 
-Alle neuen Werte lassen sich in `settings.json` im Projektordner überschreiben, zum Beispiel:
+Alle neuen Werte lassen sich in der Oberfläche einstellen oder direkt in `settings.json` im
+Projektordner, zum Beispiel:
 
 ```json
 {
@@ -68,6 +72,10 @@ Alle neuen Werte lassen sich in `settings.json` im Projektordner überschreiben,
 ```
 
 ## Wichtig bei schon verarbeiteten Texten
+
+Nach einem Modellwechsel verwendet das Programm bereits erzeugte Audiostücke weiter. Damit ein
+Text komplett mit dem neuen Modell gesprochen wird, seinen Ordner im Ausgabeordner löschen
+(`output/<Textname>`). Die Referenzstimme muss nicht neu erzeugt werden.
 
 Die neue Aufteilung passt nicht zu alten Zwischenständen. Vor dem ersten Lauf mit diesem
 Fork für jeden schon verarbeiteten Text seinen Zwischenstand im `cache`-Ordner und seinen
