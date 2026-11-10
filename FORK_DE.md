@@ -1,47 +1,88 @@
 # Hinweise zu diesem Fork
 
 Dieser Fork von [SecCodeSmith/text-to-audiobook](https://github.com/SecCodeSmith/text-to-audiobook)
-ist auf deutsche Texte und Grafikkarten mit wenig Speicher (getestet: NVIDIA RTX A500, 4 GB)
-angepasst.
+ist auf deutsche Texte und Grafikkarten mit wenig Speicher angepasst (die Python-Version
+wurde mit einer NVIDIA RTX A500 mit 4 GB getestet). Er ist inzwischen in Rust neu umgesetzt:
+ein einzelnes Programm ohne Python, PyTorch oder ffmpeg. Einstellungen, Zwischenstände und
+Ausgabeordner der Python-Version werden weiterverwendet.
 
 ## Was anders ist
 
-- **Absatzpausen:** Abschnitte enden jetzt immer an einem Absatzende. Nach jedem Absatz
-  fügt das Programm die eingestellte Absatzpause ein (`SILENCE_AFTER_PARAGRAPH_MS`,
-  Standard 1200 ms). Pausen landen auch dann an der richtigen Stelle, wenn ein Abschnitt
-  intern in mehrere Audioteile zerlegt wird (`chunk_NNN_0.wav`, `_1.wav`, …).
+- **Absatzpausen:** Abschnitte enden immer an einem Absatzende. Nach jedem Absatz fügt das
+  Programm die eingestellte Absatzpause ein (`SILENCE_AFTER_PARAGRAPH_MS`, Standard 1200 ms).
+  Pausen landen auch dann an der richtigen Stelle, wenn ein Abschnitt intern in mehrere
+  Audioteile zerlegt wird (`chunk_NNN_0.wav`, `_1.wav`, …).
 - **Deutsche Satzgrenzen:** Sätze, die mit Umlaut (Ä, Ö, Ü) oder deutschem
   Anführungszeichen („) beginnen, werden als Satzanfang erkannt.
 - **Feste Sprache:** `TTS_LANGUAGE = "german"`. Qwen3-TTS spricht jeden Abschnitt deutsch,
   unabhängig davon, was das kleine Llama-Modell erkennt. Die zehn Spracherkennungs-Abfragen
   am Anfang entfallen. `"auto"` stellt das ursprüngliche Verhalten wieder her.
-- **Modellauswahl in der Oberfläche:** im Panel „Quick Config“ und unter „Settings → TTS“
-  zwischen 0.6B (ab 4 GB VRAM, Standard) und 1.7B (ab 6 GB VRAM) wählen. Unter
-  „Settings“ lassen sich dort auch Sprache und Rechengenauigkeit einstellen, unter „LLM“
-  die Zahl der Llama-Schichten auf der GPU.
-- **bfloat16 statt float16:** behebt den Absturz „CUDA error: device-side assert triggered“.
-  Grafikkarten ohne bfloat16 fallen automatisch auf float16 zurück.
+- **Modellauswahl in der Oberfläche:** im Bereich „Quick Config“ und unter „Settings → TTS“
+  zwischen 0.6B (ab 4 GB VRAM, Standard) und 1.7B (ab 6 GB VRAM) wählen. Unter „Settings“
+  lassen sich dort auch Sprache und Rechengenauigkeit einstellen, unter „LLM“ die Zahl der
+  Llama-Schichten auf der GPU.
+- **bfloat16 statt float16:** Grafikkarten ohne bfloat16 fallen automatisch auf float16
+  zurück. Auf der CPU rechnet das Programm immer mit float32.
 - **Llama auf der CPU:** `LLM_GPU_LAYERS = 0` lässt den Grafikspeicher ganz für die
   Sprachausgabe frei.
 - **Neutrale Erzählstimme** im `NARRATOR_PROMPT` und deutscher Text für die automatisch
   erzeugte Referenzstimme.
 
-## Installation unter Linux mit NVIDIA-Treiber 550 (CUDA 12.4)
+## Installation
 
-Aktuelle torch-Versionen von PyPI brauchen einen Treiber mit CUDA 13. Für ältere Treiber
-zuerst torch 2.14 mit CUDA 12.6 installieren, danach den Rest:
+Benötigt werden [Rust](https://rustup.rs/) ab Version 1.95, CMake und ein C/C++-Compiler
+(llama.cpp, der MP3-Encoder LAME und SQLite werden mitgebaut).
+
+Unter Ubuntu/Debian zum Beispiel:
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip uv
-uv pip install torch==2.14.0 torchvision==0.29.0 torchaudio \
-  --index-url https://download.pytorch.org/whl/cu126
-uv pip install -r requirements.txt
-python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+sudo apt install build-essential cmake libxkbcommon-x11-0
 ```
 
-Die letzte Zeile muss `2.14.0+cu126 True` ausgeben.
+Programm bauen, ohne Grafikkarte:
+
+```bash
+cargo build --release
+```
+
+Mit NVIDIA-Grafikkarte (CUDA-Toolkit mit `nvcc` nötig):
+
+```bash
+cargo build --release --features cuda
+```
+
+Das CUDA-Toolkit darf nicht neuer sein als die CUDA-Version des Treibers. Beim Treiber 550
+(CUDA 12.4) also ein Toolkit bis Version 12.4 installieren. Prüfen:
+
+```bash
+nvcc --version
+nvidia-smi
+```
+
+Danach liegt das Programm unter `target/release/text-to-audiobook`. Gestartet wird es im
+Projektordner (dort liegen `settings.json`, `input/`, `output/`, `cache/`):
+
+```bash
+./target/release/text-to-audiobook
+```
+
+Ohne Befehl öffnet sich die Oberfläche. `text-to-audiobook --help` zeigt die Befehle für die
+Kommandozeile, etwa `run`, `prepare` oder `generate`.
+
+## Modelle
+
+Beim ersten Start lädt das Programm die Modelle herunter:
+
+- Llama 3.2 1B (GGUF, etwa 800 MB) nach `models/`
+- Qwen3-TTS (0.6B oder 1.7B) in den Hugging-Face-Zwischenspeicher
+  (`~/.cache/huggingface`). Von der Python-Version schon geladene Modelle werden
+  weiterverwendet.
+
+Falls Hugging Face den Download ablehnt, ein Zugangstoken setzen:
+
+```bash
+export HF_TOKEN=hf_...
+```
 
 ## Referenzstimme
 
@@ -52,12 +93,15 @@ Aufnahme von 10 bis 15 Sekunden (eine Stimme, kein Hall, keine Musik):
 ffmpeg -i aufnahme.mp3 -t 15 -ac 1 -ar 24000 cache/voice_reference.wav
 ```
 
+Andere Abtastraten rechnet das Programm selbst um, ffmpeg wird dafür nur zum Zuschneiden
+und Umwandeln der Aufnahme gebraucht.
+
 Eine frei verwendbare deutsche Stimme (CC0) gibt es im
 [Thorsten-Voice-Datensatz](https://huggingface.co/datasets/Thorsten-Voice/TV-44kHz-Full).
 
 ## Einstellungen
 
-Alle neuen Werte lassen sich in der Oberfläche einstellen oder direkt in `settings.json` im
+Alle Werte lassen sich in der Oberfläche einstellen oder direkt in `settings.json` im
 Projektordner, zum Beispiel:
 
 ```json
@@ -71,27 +115,44 @@ Projektordner, zum Beispiel:
 }
 ```
 
+`TTS_MODEL_NAME` kann auch ein Ordner mit einem heruntergeladenen Modell sein.
+
+## Unterschiede zur Python-Version
+
+- Kapitel werden in Lesereihenfolge nummeriert und zusammengefügt. Die Python-Version
+  sortierte sie alphabetisch, sodass `10_…` vor `2_…` kam.
+- Der Stimmvergleich in Schritt 3 („Cleanup Noisy“) ist aktiv. In der Python-Version fehlte
+  dafür die Bibliothek librosa, der Vergleich entfiel dort stillschweigend.
+- „Force Stop“ hält am nächsten möglichen Punkt an und löscht das angefangene Audiostück.
+  Ein Modellaufruf, der schon läuft, wird noch zu Ende gerechnet.
+- MP3-Dateien mit 24 kHz haben 160 kbit/s, das Maximum für diese Abtastrate.
+
 ## Wichtig bei schon verarbeiteten Texten
 
 Nach einem Modellwechsel verwendet das Programm bereits erzeugte Audiostücke weiter. Damit ein
 Text komplett mit dem neuen Modell gesprochen wird, seinen Ordner im Ausgabeordner löschen
 (`output/<Textname>`). Die Referenzstimme muss nicht neu erzeugt werden.
 
-Die neue Aufteilung passt nicht zu alten Zwischenständen. Vor dem ersten Lauf mit diesem
-Fork für jeden schon verarbeiteten Text seinen Zwischenstand im `cache`-Ordner und seinen
-Ordner im gewählten Ausgabeordner löschen (Beispiel für einen Text namens `Engels` und den
-Standard-Ausgabeordner `output`):
+Die Aufteilung dieses Forks passt nicht zu Zwischenständen des ursprünglichen Projekts. Wer
+Texte noch mit dem ursprünglichen Projekt verarbeitet hat, löscht vor dem ersten Lauf für
+jeden dieser Texte seinen Zwischenstand im `cache`-Ordner und seinen Ordner im gewählten
+Ausgabeordner (Beispiel für einen Text namens `Engels` und den Standard-Ausgabeordner
+`output`):
 
 ```bash
 rm -rf cache/Engels output/Engels
 ```
 
-Die Referenzstimme `cache/voice_reference.wav` bleibt dabei erhalten.
+Zwischenstände der Python-Version dieses Forks bleiben gültig. Die Referenzstimme
+`cache/voice_reference.wav` bleibt in beiden Fällen erhalten.
 
 ## Fehlerbehebung
 
-- **„flash-attn is not installed“:** nur eine Warnung, kann ignoriert werden.
 - **„CUDA unknown error“ nach Standby:** das Kernelmodul neu laden oder neu starten:
   `sudo rmmod nvidia_uvm && sudo modprobe nvidia_uvm`
 - **„CUDA out of memory“:** beim 0.6B-Modell bleiben und andere Programme schließen, die
   die Grafikkarte nutzen.
+- **Oberfläche startet unter Linux nicht (Fehler mit `xkbcommon`):** das Paket
+  `libxkbcommon-x11-0` installieren.
+- **Ausprobieren ohne Modelle:** `text-to-audiobook --mock-models run` durchläuft alle
+  Schritte und schreibt Stille statt Sprache.

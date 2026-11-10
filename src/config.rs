@@ -1,0 +1,501 @@
+// This file is part of text-to-audiobook
+//
+// text-to-audiobook is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// text-to-audiobook is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+//! Settings and directory layout.
+//!
+//! The settings live in `settings.json` in the project root and use the same
+//! upper-case keys as the Python version, so existing files keep working.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+pub const LLM_MODEL_REPO: &str = "bartowski/Llama-3.2-1B-Instruct-GGUF";
+pub const LLM_MODEL_NAME: &str = "Llama-3.2-1B-Instruct-Q4_K_M.gguf";
+
+/// Base models offered in the GUI: display label -> Hugging Face model id.
+/// 0.6B fits GPUs with 4 GB VRAM; 1.7B needs about 6 GB.
+pub const TTS_MODEL_CHOICES: &[(&str, &str)] = &[
+    ("0.6B (4 GB+ VRAM)", "Qwen/Qwen3-TTS-12Hz-0.6B-Base"),
+    ("1.7B (6 GB+ VRAM)", "Qwen/Qwen3-TTS-12Hz-1.7B-Base"),
+];
+
+/// Languages supported by Qwen3-TTS, plus "auto" (per-segment LLM detection).
+pub const TTS_LANGUAGE_CHOICES: &[&str] = &[
+    "german",
+    "english",
+    "french",
+    "spanish",
+    "italian",
+    "portuguese",
+    "russian",
+    "chinese",
+    "japanese",
+    "korean",
+    "auto",
+];
+
+pub const TTS_DTYPE_CHOICES: &[&str] = &["bfloat16", "float16", "float32"];
+pub const STORAGE_BACKEND_CHOICES: &[&str] = &["json", "sqlite"];
+pub const LOG_LEVEL_CHOICES: &[&str] = &["DEBUG", "INFO", "WARNING", "ERROR"];
+
+pub const LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+pub const LOG_BACKUP_COUNT: usize = 5;
+
+pub const DEFAULT_NARRATOR_PROMPT: &str = "A calm, clear and warm narrator voice. \
+Speaks at a measured, unhurried pace with natural intonation, \
+like an experienced audiobook reader presenting a non-fiction text.";
+
+/// GUI label for a TTS model id (the id itself if it is not a known choice).
+pub fn tts_model_label(model_id: &str) -> String {
+    TTS_MODEL_CHOICES
+        .iter()
+        .find(|(_, id)| *id == model_id)
+        .map(|(label, _)| label.to_string())
+        .unwrap_or_else(|| model_id.to_string())
+}
+
+/// TTS model id for a GUI label (labels that are not known pass through).
+pub fn tts_model_id(label: &str) -> String {
+    TTS_MODEL_CHOICES
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, id)| id.to_string())
+        .unwrap_or_else(|| label.to_string())
+}
+
+/// All user-adjustable settings. Field names map to the upper-case keys of
+/// `settings.json` (`MAX_WORDS_PER_CHUNK`, `TTS_LANGUAGE`, ...).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub struct Settings {
+    pub max_words_per_chunk: usize,
+    pub voice_seed: u64,
+    pub sample_rate: u32,
+    pub crossfade_ms: u32,
+    pub silence_after_period_ms: u32,
+    pub silence_after_paragraph_ms: u32,
+    pub llm_max_retries: u32,
+    pub log_level_console: String,
+    pub log_level_file: String,
+    pub narrator_prompt: String,
+    pub storage_backend: String,
+    pub tts_max_tokens: usize,
+    pub tts_max_words_fallback: usize,
+    pub chapter_by_chapter: bool,
+    pub vocalize_chapter_names: bool,
+    /// Language passed to Qwen3-TTS for every segment. "auto" uses the
+    /// per-segment language detected by the LLM. A fixed language avoids
+    /// mispronunciation when the small LLM mislabels a chunk and skips the
+    /// ten language probes in stage 1.
+    pub tts_language: String,
+    /// Precision for the TTS model on the GPU: "bfloat16" (falls back to
+    /// float16 on GPUs without bf16 support), "float16" or "float32".
+    pub tts_dtype: String,
+    /// Layers of the Llama helper model offloaded to the GPU: 0 = CPU only
+    /// (keeps VRAM free for TTS on small GPUs), -1 = all layers.
+    pub llm_gpu_layers: i32,
+    pub tts_model_name: String,
+    /// Runtime only (not stored): run without models; the LLM answers with
+    /// neutral defaults and the TTS writes silence. For tests and dry runs.
+    #[serde(skip)]
+    pub mock_models: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            max_words_per_chunk: 499,
+            voice_seed: 42,
+            sample_rate: 24000,
+            crossfade_ms: 80,
+            silence_after_period_ms: 500,
+            silence_after_paragraph_ms: 1200,
+            llm_max_retries: 3,
+            log_level_console: "INFO".into(),
+            log_level_file: "DEBUG".into(),
+            narrator_prompt: DEFAULT_NARRATOR_PROMPT.into(),
+            storage_backend: "json".into(),
+            tts_max_tokens: 100,
+            tts_max_words_fallback: 100,
+            chapter_by_chapter: false,
+            vocalize_chapter_names: false,
+            tts_language: "german".into(),
+            tts_dtype: "bfloat16".into(),
+            llm_gpu_layers: 0,
+            tts_model_name: "Qwen/Qwen3-TTS-12Hz-0.6B-Base".into(),
+            mock_models: false,
+        }
+    }
+}
+
+/// Upper-case keys of all settings, in file order.
+pub const SETTINGS_KEYS: &[&str] = &[
+    "MAX_WORDS_PER_CHUNK",
+    "VOICE_SEED",
+    "SAMPLE_RATE",
+    "CROSSFADE_MS",
+    "SILENCE_AFTER_PERIOD_MS",
+    "SILENCE_AFTER_PARAGRAPH_MS",
+    "LLM_MAX_RETRIES",
+    "LOG_LEVEL_CONSOLE",
+    "LOG_LEVEL_FILE",
+    "NARRATOR_PROMPT",
+    "STORAGE_BACKEND",
+    "TTS_MAX_TOKENS",
+    "TTS_MAX_WORDS_FALLBACK",
+    "CHAPTER_BY_CHAPTER",
+    "VOCALIZE_CHAPTER_NAMES",
+    "TTS_LANGUAGE",
+    "TTS_DTYPE",
+    "LLM_GPU_LAYERS",
+    "TTS_MODEL_NAME",
+];
+
+fn value_to_i64(v: &Value) -> Option<i64> {
+    match v {
+        Value::Number(n) => n.as_i64().or_else(|| {
+            n.as_f64()
+                .filter(|f| f.is_finite())
+                .map(|f| f.trunc() as i64)
+        }),
+        Value::Bool(b) => Some(i64::from(*b)),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn value_to_bool(v: &Value) -> Option<bool> {
+    match v {
+        Value::Bool(b) => Some(*b),
+        Value::Number(n) => n.as_f64().map(|f| f != 0.0),
+        Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" | "" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn value_to_string(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+impl Settings {
+    /// Apply one `settings.json` entry. Returns false (and leaves the setting
+    /// untouched) for unknown keys or values of the wrong type.
+    pub fn apply_value(&mut self, key: &str, v: &Value) -> bool {
+        fn set<T>(slot: &mut T, val: Option<T>) -> bool {
+            match val {
+                Some(x) => {
+                    *slot = x;
+                    true
+                }
+                None => false,
+            }
+        }
+        let int = || value_to_i64(v);
+        match key {
+            "MAX_WORDS_PER_CHUNK" => set(
+                &mut self.max_words_per_chunk,
+                int().and_then(|i| usize::try_from(i).ok()),
+            ),
+            "VOICE_SEED" => set(&mut self.voice_seed, int().map(|i| i as u64)),
+            "SAMPLE_RATE" => set(
+                &mut self.sample_rate,
+                int().and_then(|i| u32::try_from(i).ok()),
+            ),
+            "CROSSFADE_MS" => set(
+                &mut self.crossfade_ms,
+                int().and_then(|i| u32::try_from(i).ok()),
+            ),
+            "SILENCE_AFTER_PERIOD_MS" => set(
+                &mut self.silence_after_period_ms,
+                int().and_then(|i| u32::try_from(i).ok()),
+            ),
+            "SILENCE_AFTER_PARAGRAPH_MS" => set(
+                &mut self.silence_after_paragraph_ms,
+                int().and_then(|i| u32::try_from(i).ok()),
+            ),
+            "LLM_MAX_RETRIES" => set(
+                &mut self.llm_max_retries,
+                int().and_then(|i| u32::try_from(i).ok()),
+            ),
+            "LOG_LEVEL_CONSOLE" => set(&mut self.log_level_console, value_to_string(v)),
+            "LOG_LEVEL_FILE" => set(&mut self.log_level_file, value_to_string(v)),
+            "NARRATOR_PROMPT" => set(&mut self.narrator_prompt, value_to_string(v)),
+            "STORAGE_BACKEND" => set(&mut self.storage_backend, value_to_string(v)),
+            "TTS_MAX_TOKENS" => set(
+                &mut self.tts_max_tokens,
+                int().and_then(|i| usize::try_from(i).ok()),
+            ),
+            "TTS_MAX_WORDS_FALLBACK" => set(
+                &mut self.tts_max_words_fallback,
+                int().and_then(|i| usize::try_from(i).ok()),
+            ),
+            "CHAPTER_BY_CHAPTER" => set(&mut self.chapter_by_chapter, value_to_bool(v)),
+            "VOCALIZE_CHAPTER_NAMES" => set(&mut self.vocalize_chapter_names, value_to_bool(v)),
+            "TTS_LANGUAGE" => set(&mut self.tts_language, value_to_string(v)),
+            "TTS_DTYPE" => set(&mut self.tts_dtype, value_to_string(v)),
+            "LLM_GPU_LAYERS" => set(
+                &mut self.llm_gpu_layers,
+                int().and_then(|i| i32::try_from(i).ok()),
+            ),
+            "TTS_MODEL_NAME" => set(&mut self.tts_model_name, value_to_string(v)),
+            _ => false,
+        }
+    }
+
+    /// Settings as a JSON object with upper-case keys.
+    pub fn to_map(&self) -> Map<String, Value> {
+        match serde_json::to_value(self) {
+            Ok(Value::Object(m)) => m,
+            _ => Map::new(),
+        }
+    }
+
+    /// Value of one setting as JSON (None for unknown keys).
+    pub fn get_value(&self, key: &str) -> Option<Value> {
+        self.to_map().get(key).cloned()
+    }
+
+    /// Load `settings.json` on top of the in-code defaults. Unknown keys and
+    /// invalid values are ignored; a missing or unreadable file yields the
+    /// defaults.
+    pub fn load(path: &Path) -> Settings {
+        let mut s = Settings::default();
+        s.apply_file(path);
+        s
+    }
+
+    /// Apply the values from `path` and return the keys that were applied.
+    pub fn apply_file(&mut self, path: &Path) -> Vec<String> {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Vec::new();
+        };
+        let Ok(Value::Object(data)) = serde_json::from_str::<Value>(&text) else {
+            log::warn!("{} is not a JSON object, ignoring it", path.display());
+            return Vec::new();
+        };
+        let mut applied = Vec::new();
+        for key in SETTINGS_KEYS {
+            if let Some(v) = data.get(*key) {
+                if self.apply_value(key, v) {
+                    applied.push(key.to_string());
+                } else {
+                    log::warn!("settings.json: invalid value for {key}: {v}");
+                }
+            }
+        }
+        applied
+    }
+
+    /// TTS language normalised to lower case ("auto" when empty).
+    pub fn tts_language_normalized(&self) -> String {
+        let l = self.tts_language.trim().to_lowercase();
+        if l.is_empty() { "auto".into() } else { l }
+    }
+}
+
+/// Merge `settings` into the existing `settings.json` (keys that are not
+/// given keep their stored value) and write it back.
+pub fn save_settings_to_file(settings: &Map<String, Value>, path: &Path) -> Result<()> {
+    let mut existing = match std::fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Object(m)) => m,
+            _ => Map::new(),
+        },
+        Err(_) => Map::new(),
+    };
+    for (k, v) in settings {
+        existing.insert(k.clone(), v.clone());
+    }
+    let text = serde_json::to_string_pretty(&Value::Object(existing))?;
+    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+}
+
+/// Overwrite `settings.json` with the in-code defaults and return them.
+pub fn reset_to_defaults(path: &Path) -> Settings {
+    let defaults = Settings::default();
+    if let Ok(text) = serde_json::to_string_pretty(&Value::Object(defaults.to_map()))
+        && let Err(e) = std::fs::write(path, text)
+    {
+        log::warn!("Could not write {}: {e}", path.display());
+    }
+    defaults
+}
+
+/// Directory layout below the project root.
+#[derive(Debug, Clone)]
+pub struct Paths {
+    pub root: PathBuf,
+    pub input_dir: PathBuf,
+    pub output_dir: PathBuf,
+    pub cache_dir: PathBuf,
+    pub logs_dir: PathBuf,
+    pub models_dir: PathBuf,
+}
+
+impl Paths {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        Self {
+            input_dir: root.join("input"),
+            output_dir: root.join("output"),
+            cache_dir: root.join("cache"),
+            logs_dir: root.join("logs"),
+            models_dir: root.join("models"),
+            root,
+        }
+    }
+
+    /// Root from `TTA_ROOT`, otherwise the current working directory.
+    pub fn from_env() -> Self {
+        let root = std::env::var_os("TTA_ROOT")
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        Self::new(root)
+    }
+
+    /// Create input/output/cache/logs/models if they are missing.
+    pub fn ensure_dirs(&self) -> Result<()> {
+        for d in [
+            &self.input_dir,
+            &self.output_dir,
+            &self.cache_dir,
+            &self.logs_dir,
+            &self.models_dir,
+        ] {
+            std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
+        }
+        Ok(())
+    }
+
+    pub fn settings_file(&self) -> PathBuf {
+        self.root.join("settings.json")
+    }
+
+    pub fn log_file(&self) -> PathBuf {
+        self.logs_dir.join("pipeline.log")
+    }
+
+    pub fn voice_ref_path(&self) -> PathBuf {
+        self.cache_dir.join("voice_reference.wav")
+    }
+
+    pub fn llm_model_path(&self) -> PathBuf {
+        self.models_dir.join(LLM_MODEL_NAME)
+    }
+
+    /// Stage-1 cache directory of one project.
+    pub fn project_cache_dir(&self, project: &str) -> PathBuf {
+        self.cache_dir.join(project)
+    }
+}
+
+/// Everything a pipeline run needs to know: directory layout plus a snapshot
+/// of the settings. Workers get their own copy, so changing settings in the
+/// GUI applies to the next run.
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub paths: Paths,
+    pub settings: Settings,
+}
+
+impl Config {
+    pub fn new(paths: Paths, settings: Settings) -> Self {
+        Self { paths, settings }
+    }
+
+    /// Paths from the environment plus `settings.json` from the root.
+    pub fn load_from_env() -> Self {
+        let paths = Paths::from_env();
+        let settings = Settings::load(&paths.settings_file());
+        Self { paths, settings }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_label_roundtrip() {
+        for (label, id) in TTS_MODEL_CHOICES {
+            assert_eq!(tts_model_label(id), *label);
+            assert_eq!(tts_model_id(label), *id);
+        }
+        assert_eq!(tts_model_label("my/custom"), "my/custom");
+        assert_eq!(tts_model_id("my/custom"), "my/custom");
+    }
+
+    #[test]
+    fn defaults_match_python_version() {
+        let s = Settings::default();
+        assert_eq!(s.max_words_per_chunk, 499);
+        assert_eq!(s.sample_rate, 24000);
+        assert_eq!(s.storage_backend, "json");
+        assert_eq!(s.tts_language, "german");
+        assert_eq!(s.llm_gpu_layers, 0);
+        let map = s.to_map();
+        let keys: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
+        assert_eq!(keys, SETTINGS_KEYS);
+    }
+
+    #[test]
+    fn load_is_lenient() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"MAX_WORDS_PER_CHUNK": "120", "CHAPTER_BY_CHAPTER": true,
+                "SAMPLE_RATE": "nope", "UNKNOWN": 1, "LLM_GPU_LAYERS": -1,
+                "VOCALIZE_CHAPTER_NAMES": "false", "CROSSFADE_MS": 40.0}"#,
+        )
+        .unwrap();
+        let s = Settings::load(&path);
+        assert_eq!(s.max_words_per_chunk, 120);
+        assert!(s.chapter_by_chapter);
+        assert!(!s.vocalize_chapter_names);
+        assert_eq!(s.sample_rate, 24000);
+        assert_eq!(s.llm_gpu_layers, -1);
+        assert_eq!(s.crossfade_ms, 40);
+    }
+
+    #[test]
+    fn save_merges_with_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"KEEP_ME": 1, "VOICE_SEED": 1}"#).unwrap();
+        let mut m = Map::new();
+        m.insert("VOICE_SEED".into(), Value::from(7));
+        save_settings_to_file(&m, &path).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["KEEP_ME"], 1);
+        assert_eq!(v["VOICE_SEED"], 7);
+        let reset = reset_to_defaults(&path);
+        assert_eq!(reset, Settings::default());
+        assert_eq!(Settings::load(&path), Settings::default());
+    }
+}

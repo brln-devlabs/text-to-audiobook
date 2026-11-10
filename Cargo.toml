@@ -1,0 +1,64 @@
+[package]
+name = "text-to-audiobook"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Markdown-Texte mit Llama 3.2 (llama.cpp) und Qwen3-TTS (Candle) in Hörbücher verwandeln"
+license = "AGPL-3.0-or-later"
+readme = "README.md"
+default-run = "text-to-audiobook"
+
+[[bin]]
+name = "text-to-audiobook"
+path = "src/main.rs"
+
+[features]
+default = ["gui", "llm", "tts"]
+# Desktop-Oberfläche (egui/eframe)
+gui = ["dep:eframe", "dep:rfd"]
+# Llama-Hilfsmodell über llama.cpp (baut llama.cpp mit cmake)
+llm = ["dep:llama-cpp-2"]
+# Qwen3-TTS über Candle
+tts = ["dep:qwen_tts", "dep:candle-core"]
+# NVIDIA-GPU für LLM und TTS (CUDA-Toolkit nötig)
+cuda = ["llm", "tts", "llama-cpp-2/cuda", "qwen_tts/cuda", "candle-core/cuda"]
+# Apple-GPU
+metal = ["llm", "tts", "llama-cpp-2/metal", "qwen_tts/metal", "candle-core/metal"]
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.5", features = ["derive"] }
+hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
+hound = "3.5"
+id3 = "1.16"
+indexmap = { version = "2", features = ["serde"] }
+log = { version = "0.4", features = ["std"] }
+mp3lame-encoder = "0.2"
+regex = "1.11"
+rusqlite = { version = "0.37", features = ["bundled"] }
+rustfft = "6.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+ureq = { version = "2.10", default-features = false, features = ["tls", "native-certs"] }
+
+eframe = { version = "0.37", optional = true }
+rfd = { version = "0.17", optional = true }
+
+llama-cpp-2 = { version = "=0.1.160", optional = true }
+
+candle-core = { version = "0.9", optional = true }
+qwen_tts = { version = "0.1.1", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+
+# Die Modell-Mathematik ist ohne Optimierung unbenutzbar langsam, auch im Debug-Build.
+[profile.dev.package."*"]
+opt-level = 3
