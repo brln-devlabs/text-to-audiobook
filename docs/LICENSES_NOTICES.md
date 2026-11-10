@@ -1,6 +1,6 @@
 # License Information
 
-This project incorporates several open-source libraries. Below is a comprehensive list of all dependencies and their respective licenses.
+This project incorporates several open-source libraries. Below is a list of the direct dependencies and their licenses. The complete dependency tree with exact versions is pinned in [`Cargo.lock`](../Cargo.lock).
 
 ## Project License
 
@@ -10,174 +10,81 @@ text to audiobook is provided under the [AGPL License](../LICENSE).
 
 ## Third-Party Dependencies
 
-### Core ML/Audio Libraries
+### Machine Learning
 
-#### 1. **PyTorch (torch)**
-- **Version**: >=2.4.0
-- **License**: BSD 3-Clause
-- **Homepage**: https://pytorch.org/
-- **Description**: Deep learning framework
-- **License Text**: See https://github.com/pytorch/pytorch/blob/master/LICENSE
+| Crate | Version | License | Purpose |
+|---|---|---|---|
+| [candle-core](https://github.com/huggingface/candle) | 0.9 | MIT OR Apache-2.0 | tensor library (CPU, CUDA, Metal) |
+| [qwen_tts](https://github.com/danielclough/qwen3-tts-rs) | 0.1 | MIT OR Apache-2.0 | Qwen3-TTS implementation for Candle |
+| [llama-cpp-2](https://github.com/utilityai/llama-cpp-rs) | 0.1 | MIT OR Apache-2.0 | Rust bindings for llama.cpp |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) (bundled by llama-cpp-sys-2) | — | MIT | GGUF inference for the Llama helper model |
+| [tokenizers](https://github.com/huggingface/tokenizers) (via qwen_tts) | 0.21 | Apache-2.0 | text tokenizer of Qwen3-TTS |
+| [hf-hub](https://github.com/huggingface/hf-hub) | 0.4 | Apache-2.0 | Hugging Face downloads and cache |
 
-#### 2. **Transformers**
-- **Version**: >=4.45.0
-- **License**: Apache License 2.0
-- **Homepage**: https://github.com/huggingface/transformers
-- **Description**: State-of-the-art NLP models and tools
-- **License Text**: See https://github.com/huggingface/transformers/blob/main/LICENSE
+### Audio
 
-#### 3. **Qwen-TTS**
-- **Version**: >=0.1.1
-- **License**: Apache License 2.0
-- **Homepage**: https://github.com/QwenLM/Qwen-TTS
-- **Description**: Alibaba Qwen text-to-speech model
-- **License Text**: See https://github.com/QwenLM/Qwen-TTS/blob/main/LICENSE
+| Crate | Version | License | Purpose |
+|---|---|---|---|
+| [hound](https://github.com/ruuda/hound) | 3.5 | Apache-2.0 | WAV reading and writing |
+| [mp3lame-encoder](https://github.com/DoumanAsh/mp3lame-encoder) / mp3lame-sys | 0.2 | LGPL-3.0 | MP3 export (bundles the LAME encoder, LGPL) |
+| [rustfft](https://github.com/ejmahler/RustFFT) | 6 | MIT OR Apache-2.0 | FFT for the quality audit and MFCCs |
+| [id3](https://codeberg.org/polyfloyd/rust-id3) | 1 | MIT | ID3 tags in chunk WAVs |
 
-#### 4. **Llama-cpp-python**
-- **Version**: >=0.3.0
-- **License**: MIT
-- **Homepage**: https://github.com/abetlen/llama-cpp-python
-- **Description**: Python bindings for llama.cpp
-- **License Text**: See https://github.com/abetlen/llama-cpp-python/blob/master/LICENSE
+### Application
 
-#### 5. **NumPy**
-- **Version**: >=1.26.0
-- **License**: BSD 3-Clause
-- **Homepage**: https://numpy.org/
-- **Description**: Numerical computing library
-- **License Text**: See https://github.com/numpy/numpy/blob/main/LICENSE.txt
-
-#### 6. **SciPy**
-- **Version**: >=1.13.0
-- **License**: BSD 3-Clause
-- **Homepage**: https://scipy.org/
-- **Description**: Scientific computing library
-- **License Text**: See https://github.com/scipy/scipy/blob/main/LICENSE.txt
-
-#### 7. **HuggingFace Hub**
-- **Version**: >=0.23.0
-- **License**: Apache License 2.0
-- **Homepage**: https://github.com/huggingface/huggingface_hub
-- **Description**: Client library for HuggingFace Hub
-- **License Text**: See https://github.com/huggingface/huggingface_hub/blob/main/LICENSE
-
-### Audio Processing
-
-#### 8. **Soundfile**
-- **Version**: >=0.12.1
-- **License**: BSD 3-Clause
-- **Homepage**: https://github.com/bastibe/SoundFile
-- **Description**: Read/write sound files to NumPy arrays
-- **License Text**: See https://github.com/bastibe/SoundFile/blob/master/LICENSE
-
-#### 9. **Pydub**
-- **Version**: >=0.25.1
-- **License**: MIT
-- **Homepage**: https://github.com/jiaaro/pydub
-- **Description**: Simple audio manipulation
-- **License Text**: See https://github.com/jiaaro/pydub/blob/master/LICENSE
-
-#### 10. **Mutagen**
-- **Version**: >=1.46.0
-- **License**: MIT
-- **Homepage**: https://github.com/quodlibet/mutagen
-- **Description**: Audio metadata tagging library
-- **License Text**: See https://github.com/quodlibet/mutagen/blob/master/LICENSE
-
-#### 11. **Noisereduce**
-- **Version**: >=3.0.3
-- **License**: MIT
-- **Homepage**: https://github.com/timsainb/noisereduce
-- **Description**: Noise reduction using spectral gating
-- **License Text**: See https://github.com/timsainb/noisereduce/blob/master/LICENSE
-
-### Utilities
-
-#### 12. **Accelerate**
-- **Version**: >=1.11.0
-- **License**: Apache License 2.0
-- **Homepage**: https://github.com/huggingface/accelerate
-- **Description**: Distributed training/inference acceleration
-- **License Text**: See https://github.com/huggingface/accelerate/blob/main/LICENSE
-
-#### 13. **Safetensors**
-- **Version**: >=0.4.5
-- **License**: Apache License 2.0
-- **Homepage**: https://github.com/huggingface/safetensors
-- **Description**: Safe serialization format for ML models
-- **License Text**: See https://github.com/huggingface/safetensors/blob/main/LICENSE
-
-#### 14. **Regex**
-- **Version**: >=2024.9.11
-- **License**: Apache License 2.0
-- **Homepage**: https://github.com/regex-go/regex
-- **Description**: Alternative regex implementation with more features
-- **License Text**: See https://github.com/regex-go/regex/blob/master/LICENSE
-
-#### 15. **Natsort**
-- **Version**: >=8.4.0
-- **License**: MIT
-- **Homepage**: https://github.com/SethMMorton/natsort
-- **Description**: Natural sorting for Python
-- **License Text**: See https://github.com/SethMMorton/natsort/blob/master/LICENSE
-
-#### 16. **CustomTkinter**
-- **Version**: >=5.2.2
-- **License**: MIT
-- **Homepage**: https://github.com/TomSchimansky/CustomTkinter
-- **Description**: Modern dark mode customizable tkinter UI library
-- **License Text**: See https://github.com/TomSchimansky/CustomTkinter/blob/master/LICENSE
+| Crate | Version | License | Purpose |
+|---|---|---|---|
+| [eframe / egui](https://github.com/emilk/egui) | 0.37 | MIT OR Apache-2.0 | desktop GUI |
+| [rfd](https://github.com/PolyMeilex/rfd) | 0.17 | MIT | file dialogs |
+| [rusqlite](https://github.com/rusqlite/rusqlite) (bundled SQLite) | 0.37 | MIT (SQLite: public domain) | SQLite storage backend |
+| [clap](https://github.com/clap-rs/clap) | 4 | MIT OR Apache-2.0 | command line |
+| [serde](https://github.com/serde-rs/serde), [serde_json](https://github.com/serde-rs/json) | 1 | MIT OR Apache-2.0 | settings and cache files |
+| [regex](https://github.com/rust-lang/regex) | 1 | MIT OR Apache-2.0 | text cleaning |
+| [ureq](https://github.com/algesten/ureq) | 2 | MIT OR Apache-2.0 | model download |
+| [chrono](https://github.com/chronotope/chrono) | 0.4 | MIT OR Apache-2.0 | log timestamps, tag year |
+| [indexmap](https://github.com/indexmap-rs/indexmap) | 2 | Apache-2.0 OR MIT | ordered maps |
+| [log](https://github.com/rust-lang/log), [anyhow](https://github.com/dtolnay/anyhow), [thiserror](https://github.com/dtolnay/thiserror) | — | MIT OR Apache-2.0 | logging and errors |
 
 ### Testing
 
-#### 17. **Pytest**
-- **Version**: >=8.3.0
-- **License**: MIT
-- **Homepage**: https://pytest.org/
-- **Description**: Testing framework
-- **License Text**: See https://github.com/pytest-dev/pytest/blob/main/LICENSE
+| Crate | Version | License | Purpose |
+|---|---|---|---|
+| [tempfile](https://github.com/Stebalien/tempfile) | 3 | MIT OR Apache-2.0 | temporary directories in tests |
 
-#### 18. **Pytest-mock**
-- **Version**: >=3.14.0
-- **License**: MIT
-- **Homepage**: https://github.com/pytest-dev/pytest-mock
-- **Description**: Pytest plugin for mocking
-- **License Text**: See https://github.com/pytest-dev/pytest-mock/blob/master/LICENSE
+---
+
+## Models
+
+| Model | License |
+|---|---|
+| [Qwen3-TTS](https://huggingface.co/Qwen) (0.6B / 1.7B Base) | Apache-2.0 |
+| [Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct) (GGUF by bartowski) | Llama 3.2 Community License Agreement |
+
+Models are downloaded at runtime and are not part of this repository or its binaries.
 
 ---
 
 ## License Summary
 
-| License Type | Count | Libraries |
-|---|---|---|
-| MIT | 9 | pydub, noisereduce, natsort, customtkinter, pytest, pytest-mock, llama-cpp-python, mutagen |
-| Apache 2.0 | 7 | transformers, qwen-tts, accelerate, safetensors, regex, huggingface_hub |
-| BSD 3-Clause | 4 | torch, numpy, scipy, soundfile |
-
----
+- Nearly all crates use permissive licenses (MIT, Apache-2.0, BSD, Zlib, ISC, Unicode-3.0).
+- The MP3 encoder (LAME, via mp3lame-sys/mp3lame-encoder) is LGPL. It is linked into the AGPL-licensed program, whose complete source is available, which satisfies the LGPL.
 
 ## Obtaining Full License Texts
 
-For the complete license text of any dependency, you can:
-
-1. Visit the project's GitHub repository (links provided above)
-2. Check the installed package in your virtual environment:
-   ```bash
-   pip show <package-name>
-   ```
-3. Access the license through PyPI: `https://pypi.org/project/<package-name>/`
+1. Visit the project's repository (links above)
+2. Inspect the crate sources in `~/.cargo/registry/src/` after a build
+3. Generate a full report, e.g. with [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) or [`cargo-license`](https://github.com/onur/cargo-license)
 
 ---
 
 ## Compliance Notes
 
-- All dependencies use permissive open-source licenses (MIT, Apache 2.0, BSD)
-- These licenses allow commercial and private use
 - Modifications must retain copyright and license notices
 - No warranty is provided for any third-party library
+- Check the model licenses before distributing generated audio commercially
 
 For questions regarding licensing, please contact: admin@seccodesmith.pl
 
 ---
 
-*Last Updated: 2026-05-03*
+*Last Updated: 2026-11-10*

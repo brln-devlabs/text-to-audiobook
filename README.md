@@ -1,19 +1,20 @@
 # text-to-audiobook - Advanced Text-to-Speech Application
 
 > **Fork:** angepasst für deutsche Texte, Absatzpausen und GPUs mit 4 GB VRAM. Details und Installationshinweise: [FORK_DE.md](FORK_DE.md)
+>
+> **Rust:** This version is a reimplementation of the original Python project in Rust. Settings, cache layout and output structure stay compatible. See [Differences from the Python version](#differences-from-the-python-version).
 
-A powerful, open-source text-to-speech application powered by state-of-the-art AI models. This project combines the Qwen3-TTS model with intelligent text processing to deliver high-quality, natural-sounding audio generation with a modern desktop interface.
+An open-source text-to-speech application that turns Markdown texts into audiobooks. It combines the Qwen3-TTS model (voice cloning) with LLM-based text analysis (Llama 3.2 1B) and ships as a single native binary with a desktop GUI and a command-line interface.
 
 ## ✨ Features
 
-- 🎤 **Advanced TTS Engine**: Built on Qwen3-TTS for high-quality voice synthesis
-- 🧠 **Intelligent Text Processing**: LLM-powered text normalization and chunking
-- 🎨 **Modern GUI**: CustomTkinter-based interface with real-time progress tracking
-- ⚡ **Optimized Audio Pipeline**: Multi-stage audio processing with noise reduction and crossfading
-- 💾 **Flexible Storage**: Support for both SQLite and JSON storage backends
-- 🔄 **Caching System**: Intelligent caching of processed segments for faster regeneration
-- 🎛️ **Configurable Settings**: Easy-to-customize audio parameters via JSON config
-- 📊 **Comprehensive Testing**: Full test suite with 100% mock-based unit tests
+- 🎤 **Qwen3-TTS voice cloning** on [Candle](https://github.com/huggingface/candle) (CPU, CUDA or Metal), consistent narrator via voice anchoring
+- 🧠 **LLM text analysis** with Llama 3.2 1B through [llama.cpp](https://github.com/ggml-org/llama.cpp): emotion spans, language, chapter and story titles, reading order of chapter files
+- 🎨 **Desktop GUI** (egui) with project list, progress/ETA and live log, plus a **CLI** for headless use and Docker
+- ⚡ **Audio pipeline**: Butterworth clean-up filters, crossfades, sentence/paragraph pauses, WAV + MP3 export (LAME built in, no ffmpeg needed)
+- 🔍 **Quality audit** of generated chunks (speech ratio, loudness, clipping, MFCC voice match) with automatic regeneration
+- 💾 **SQLite or JSON** cache; interrupted runs resume where they stopped
+- 📊 **Tests without models**: mock backends cover the whole pipeline (`cargo test`)
 
 ## 📸 Screenshots
 
@@ -21,278 +22,275 @@ A powerful, open-source text-to-speech application powered by state-of-the-art A
 
 ![Main Interface](docs/img/01-main-interface.png)
 
-The primary GUI for text input and project management. Features intuitive file selection, progress tracking, and real-time feedback.
+Input and output directories, the stories (projects) found in the input directory, the four stage buttons, progress and the live log.
 
-### Voice Prompt
+### Voice Description
 
-![Voice Prompt](docs/img/02-project-settings.png)
+![Voice Description](docs/img/02-project-settings.png)
 
-Define custom voice characteristics with the narrator prompt interface. Customize the voice personality and tone for your audiobook generation.
+Narrator description and regeneration of the voice reference (`cache/voice_reference.wav`).
 
-### Quick Settings
+### Quick Config
 
-![Quick Settings](docs/img/03-audio-processing.png)
+![Quick Config](docs/img/03-audio-processing.png)
 
-Access quick adjustments for audio processing parameters. Fine-tune settings on-the-fly during text normalization and audio generation.
+TTS model, chunk sizes, voice seed, crossfade and pauses at a glance.
 
 ### Settings Window
 
 ![Settings Window](docs/img/04-output-results.png)
 
-Comprehensive settings configuration panel. Adjust all audio parameters, output formats, chunk sizes, and processing options in one place.
+All settings, stored in `settings.json`.
 
 ## System Requirements
 
-- **GPU** (Optional): NVIDIA GPU with CUDA support (RTX 4070 tested, 8 GB VRAM minimum)
-- **CPU**: Quad-core or better
-- **RAM**: 16 GB minimum (8 GB minimum with smaller models)
-- **Disk**: 20 GB free (for models + output)
-- **OS**: Windows 11, Ubuntu 20.04+, macOS 12+
-- **Python**: 3.8 or higher
-- **ffmpeg**: Optional, for MP3 export
+- **GPU** (optional): NVIDIA GPU with CUDA or Apple Silicon (Metal). Guide values from the Python version: 4 GB VRAM for the 0.6B model, 6 GB+ for 1.7B
+- **CPU**: quad-core or better (CPU-only works, but synthesis is slow)
+- **RAM**: 16 GB recommended (8 GB with the 0.6B model)
+- **Disk**: 10 GB free for models and output
+- **OS**: Windows 10/11, Linux, macOS 12+
+
+### Build requirements
+
+- Rust 1.95 or newer ([rustup](https://rustup.rs/))
+- CMake and a C/C++ compiler (llama.cpp, LAME and SQLite are compiled from source)
+- For `--features cuda`: CUDA toolkit (nvcc) matching your driver
+- Linux GUI at runtime: X11 or Wayland with `libxkbcommon` and OpenGL/Vulkan drivers (no GTK needed)
 
 ## Installation
 
-### 1. Install ffmpeg
-
-**Windows (via Chocolatey)**:
 ```bash
-choco install ffmpeg
-```
-
-**Ubuntu/Debian**:
-```bash
-sudo apt-get install ffmpeg
-```
-
-**macOS**:
-```bash
-brew install ffmpeg
-```
-
-### 2. Clone and setup
-
-```bash
+git clone https://github.com/brln-devlabs/text-to-audiobook
 cd text-to-audiobook
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+cargo build --release
 ```
 
-### 3. Set up Hugging Face token (optional for public models)
+The binary is `target/release/text-to-audiobook` (`.exe` on Windows).
+
+GPU builds:
 
 ```bash
-# Set HF_TOKEN for automatic model downloads
+cargo build --release --features cuda    # NVIDIA
+cargo build --release --features metal   # Apple Silicon
+```
+
+Headless build without GUI (servers, Docker):
+
+```bash
+cargo build --release --no-default-features --features llm,tts
+```
+
+### Hugging Face token (optional)
+
+Models are downloaded automatically on first use. Set `HF_TOKEN` if a download is refused:
+
+```bash
 export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxx  # macOS/Linux
 set HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxx     # Windows CMD
 $env:HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxxxx"  # Windows PowerShell
 ```
 
-Get your token from [Hugging Face Settings](https://huggingface.co/settings/tokens).
+- Llama-3.2-1B-Instruct (Q4_K_M GGUF) → `models/`
+- Qwen3-TTS (0.6B or 1.7B Base) → Hugging Face cache (`HF_HOME`, default `~/.cache/huggingface`). Models already downloaded by the Python version are reused.
 
-**Models are downloaded automatically on first run:**
-
-- Llama-3.2-1B-Instruct (Q4_K_M) → `models/`
-- Qwen3-TTS-1.7B → HF home cache (auto-managed by transformers)
+`TTS_MODEL_NAME` may also point to a local model directory.
 
 ## Usage
 
-### GUI Mode (Recommended)
+All paths are relative to the project root: the current directory, `$TTA_ROOT` or `--root DIR`. It holds `settings.json`, `input/`, `output/`, `cache/`, `logs/` and `models/`.
+
+### GUI
 
 ```bash
-python main.py
+text-to-audiobook
 ```
 
-The GUI will open. Select input and output directories, then click **Start Processing**.
+Select the input and output directories, tick the stories and run the stages:
 
-### Programmatic Mode
+1. **Prepare Segments** – clean, chunk and analyse the texts (cached)
+2. **Generate Audio** – synthesize every segment, denoise, assemble
+3. **Cleanup Noisy** – audit the chunks; failed ones are deleted so stage 2 regenerates them
+4. **Assemble Final** – rebuild the audiobook from existing chunks without TTS
 
-```python
-from src.pipeline import run
-from pathlib import Path
+### Command line
 
-run(
-    input_dir=Path("input"),
-    output_dir=Path("output"),
-    progress_cb=lambda msg: print(msg)
-)
+```bash
+text-to-audiobook run                      # stage 1 + 2 for all projects
+text-to-audiobook prepare -p MyBook        # stage 1 for one project
+text-to-audiobook generate                 # stage 2 from the cache
+text-to-audiobook cleanup                  # stage 3
+text-to-audiobook assemble                 # stage 4
+text-to-audiobook projects                 # list projects and cache state
+text-to-audiobook fix-languages            # re-check language outliers
+text-to-audiobook voice-ref                # regenerate the voice reference
+text-to-audiobook --mock-models run        # dry run without models (silence)
 ```
+
+`--input`, `--output` and `--project` (repeatable) work with every command; `--help` lists everything.
 
 ## Input Format
 
-Place Markdown files in the `input/` directory. Files are discovered and sorted alphanumerically. Supported Markdown:
+Every subfolder of `input/` is one project (book), every loose `.md` file is a project of its own. Inside a folder, the reading order follows numeric prefixes (`0_Prologue.md`, `10_Chapter.md`) or is determined by the LLM from names and content (ordinal words, prologue/epilogue). Supported Markdown:
+
 - Headers (`#`, `##`, etc.) — stripped
 - **Bold**, *italic*, `inline code` — formatting removed, text preserved
 - Links `[text](url)` — link text preserved, URL removed
 - Code fences (` ``` `) — stripped entirely
-- Paragraphs (separated by blank lines) — preserved
-
-Example: `input/example_story.md`
+- Paragraphs (separated by blank lines) — preserved; each ends with the paragraph pause
 
 ## Output Structure
 
 ```
 output/
-├── final/
-│   ├── audiobook.mp3          # Final audio
-│   └── audiobook.wav          # WAV mirror
-└── chunks/
-    ├── chunk_000000.wav
-    ├── chunk_000001.wav
-    └── ...
+└── <project>/
+    ├── final/
+    │   ├── audiobook.mp3          # final audio (or chapter_01.mp3, ...)
+    │   └── audiobook.wav          # WAV mirror
+    └── chunks/
+        ├── chunk_000000.wav
+        ├── chunk_000001_0.wav     # long segments are split into sub-parts
+        ├── chunk_000001_1.wav
+        └── ...
 ```
 
 ## Configuration
 
-Edit `src/config.py` to customize:
-- `MAX_WORDS_PER_CHUNK` — default 499
-- `SAMPLE_RATE` — default 24000 Hz
-- `SILENCE_AFTER_PERIOD_MS` — default 500 ms
-- `SILENCE_AFTER_PARAGRAPH_MS` — default 1200 ms
-- `NARRATOR_PROMPT` — customize voice prompt
+Edit `settings.json` in the project root or use the settings window. Keys and defaults:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `MAX_WORDS_PER_CHUNK` | 499 | words per text chunk (chunks never cross paragraphs) |
+| `TTS_MODEL_NAME` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Base model id or local directory |
+| `TTS_LANGUAGE` | `german` | fixed TTS language, `auto` = per-segment LLM detection |
+| `TTS_DTYPE` | `bfloat16` | GPU precision (`bfloat16` falls back to `float16`), CPU always float32 |
+| `TTS_MAX_TOKENS` | 100 | token limit per TTS call; longer segments become sub-parts |
+| `TTS_MAX_WORDS_FALLBACK` | 100 | same limit in words when no tokenizer is available |
+| `VOICE_SEED` | 42 | sampling seed (same seed → same voice and output) |
+| `SAMPLE_RATE` | 24000 | sample rate of mock/silence output |
+| `CROSSFADE_MS` | 80 | crossfade between chunks |
+| `SILENCE_AFTER_PERIOD_MS` | 500 | pause after a segment |
+| `SILENCE_AFTER_PARAGRAPH_MS` | 1200 | pause after a paragraph |
+| `LLM_GPU_LAYERS` | 0 | Llama layers on the GPU (0 = CPU, -1 = all) |
+| `LLM_MAX_RETRIES` | 3 | attempts per LLM call |
+| `STORAGE_BACKEND` | `json` | `json` or `sqlite` |
+| `CHAPTER_BY_CHAPTER` | false | one MP3 per source file |
+| `VOCALIZE_CHAPTER_NAMES` | false | speak the chapter name (from the file name) first |
+| `LOG_LEVEL_CONSOLE` / `LOG_LEVEL_FILE` | `INFO` / `DEBUG` | log levels |
+| `NARRATOR_PROMPT` | calm narrator | voice description (shown in the GUI) |
 
 ## Testing
 
-Run the full test suite (mocked, no GPU required):
-
 ```bash
-pytest -v
+cargo test
 ```
 
-Key test files:
-- `test_markdown_cleaner.py` — Markdown stripping logic
-- `test_chunker.py` — Sentence-boundary chunking
-- `test_llm_normalizer.py` — Text normalization caching
-- `test_tts_engine.py` — Voice anchoring behavior
-- `test_pipeline.py` — End-to-end orchestration
-- `test_main_smoketest.py` — Import safety
+The tests use mock LLM/TTS backends and temporary directories: no models, GPU or network needed. They cover Markdown cleaning, chunking, storage backends, LLM answer validation, voice anchoring and sub-part handling, filters (checked against scipy), MFCC (checked against librosa), crossfade timing (checked against pydub), the quality audit and an end-to-end run.
 
-### Test Isolation
-
-All tests:
-- Mock `torch.cuda` (no GPU usage)
-- Mock `llama_cpp.Llama` (no LLM inference)
-- Mock `transformers` models (no TTS inference)
-- Mock file I/O (no disk artifacts)
-- Run in <10 seconds on CPU
+```bash
+cargo fmt --check
+cargo clippy --all-targets
+```
 
 ## Architecture
 
-### Stage 1: Text Normalization & Emotion-Based Re-chunking
-1. Discover `.md` files → clean markdown → split into chunks
-2. Load **Llama-3.2-1B-Instruct** (4-bit GGUF via llama-cpp-python)
-3. For each chunk:
-   - Normalize text (expand numbers, abbreviations, dates)
-   - Detect dominant emotion + list all emotions present
-   - **Output ONLY JSON** (strictly enforced)
-   - Cache result to `cache/<project>/chunk_NNN.json`
-4. **Emotion-based re-chunking**:
-   - Split chunks with multiple emotions into separate emotion-focused segments
-   - Merge adjacent chunks with identical emotion for voice consistency
-5. Unload LLM, clear CUDA cache
+| Module | Role |
+|---|---|
+| `markdown_cleaner`, `chunker` | Markdown → plain text → paragraph-aligned chunks |
+| `llm` | Llama 3.2 via llama.cpp (`llama-cpp-2`), JSON-only prompts with validation and retries |
+| `storage` | JSON or SQLite cache per project |
+| `tts` | Qwen3-TTS via Candle (`qwen_tts`), voice anchoring, sub-parts, ID3 tags |
+| `audio` | WAV I/O, Butterworth filters, assembler (WAV + MP3), quality audit, MFCC |
+| `pipeline` | stages 1–4, project discovery, chapter assembly |
+| `gui`, `main` | egui desktop app and CLI |
 
-### Stage 2: Audio Generation & Assembly
-1. Load **Qwen3-TTS-1.7B** (fp16, device-mapped)
-2. Generate first chunk with narrator prompt → **anchor**
-3. For chunks 2..N:
-   - Use anchor WAV as voice reference (zero-shot voice matching)
-   - Synthesize with same voice characteristics
-   - Denoise each chunk immediately
-4. Concatenate with crossfade + silence gaps
-5. Export MP3 + WAV
+### Stage 1: Text analysis
+1. Discover projects → order files → clean Markdown → split into chunks
+2. Load **Llama-3.2-1B-Instruct** (4-bit GGUF)
+3. Project language: fixed (`TTS_LANGUAGE`) or majority vote over the first 10 chunks
+4. Per chunk: emotion spans by sentence number (the LLM returns only index ranges, so it cannot alter the text); cached
+5. Spans over the word budget are re-chunked; story title, chapter info and speaking speed are detected; final segments are cached
+6. Unload the LLM
+
+### Stage 2: Audio generation
+1. Load **Qwen3-TTS** (0.6B or 1.7B Base); create `cache/voice_reference.wav` if missing
+2. Chunk 0 clones the voice reference → becomes the **anchor**
+3. Every later chunk clones the anchor (x-vector voice cloning), same seed each time
+4. Denoise each chunk (high-pass 60 Hz, low-pass 9 kHz)
+5. Join with crossfades and pauses, export WAV + MP3
 
 ### Voice Anchoring
-The narrator voice is locked after the first chunk is generated. Every subsequent chunk uses that anchor audio as a reference prompt, ensuring the model maintains consistent speaker identity throughout the entire project.
+The narrator voice is locked after the first chunk. Every following chunk uses that audio as voice reference, which keeps the speaker identity stable across the whole book. For your own narrator, put a 10–15 s recording at `cache/voice_reference.wav` (see [FORK_DE.md](FORK_DE.md)).
+
+## Differences from the Python version
+
+- **One binary**, no Python, PyTorch or ffmpeg installation. Models: llama.cpp for Llama (same GGUF file), Candle for Qwen3-TTS (same Hugging Face checkpoints, shared cache).
+- **CLI and Docker** run the pipeline headless; the GUI is optional (feature `gui`).
+- **Chapter order:** stage 2 and stage 4 number and join chapters in reading order. The Python version sorted chapters alphabetically, so `10_…` came before `2_…`.
+- **Voice-match check is active:** the MFCC check in stage 3 needed librosa, which was not a dependency, so the Python version skipped it. The Rust version computes the same MFCCs natively.
+- **ID3 tags** are stored in the WAV's RIFF `ID3 ` chunk and survive denoising and cleanup; the Python version prepended them to the file, and the next denoise removed them.
+- **Long books** are assembled in a streaming fashion (constant memory instead of repeated in-memory copies).
+- **Force Stop** stops at the next possible point (between sub-parts and model calls) and removes the partial chunk; a single model call that is already running finishes first.
+- **MP3 bitrate:** 192 kbit/s at 32 kHz and above; at 24 kHz the MPEG-2 maximum of 160 kbit/s applies.
+- **Small fixes:** duplicate file names in the LLM's reading order are ignored; cache entries are listed in numeric order beyond 9999 segments; WAVs written by the Python version (also with a leading ID3 tag) are read as they are.
+- The Qwen3-TTS implementation is the community crate [`qwen_tts`](https://crates.io/crates/qwen_tts). Its sampling uses a PyTorch-compatible RNG, but output is not bit-identical to the PyTorch reference.
 
 ## Logging
 
-Logs are written to `logs/pipeline.log` with rotating file handler (5 MB per file, 5 backups).
+Logs go to the console, the GUI and `logs/pipeline.log` (rotating, 5 MB per file, 5 backups).
 
-Format: `YYYY-MM-DD HH:MM:SS | LEVEL | module | message`
-
-## Performance Notes
-
-- **LLM inference**: ~3–5 seconds per chunk (1B param model)
-- **TTS synthesis**: ~5–10 seconds per chunk (Qwen3-TTS-1.7B)
-- **Audio assembly**: <2 seconds
-- **Total**: ~3 hour audiobook ≈ 2–3 hours processing time on RTX 4070
+Format: `YYYY-MM-DD HH:MM:SS,mmm | LEVEL | module | message`
 
 ## Troubleshooting
 
 | Issue | Solution |
-|-------|----------|
-| Model download fails | Set `HF_TOKEN` environment variable with valid Hugging Face token |
-| `llama_cpp.Llama not found` | Ensure `llama-cpp-python` installed; restart Python |
-| `OutOfMemoryError` on GPU | Reduce `MAX_WORDS_PER_CHUNK`; disable `n_gpu_layers` in LLM config |
-| Voice inconsistency between chunks | Check anchor WAV exists; verify Qwen3-TTS model is loaded |
-| `ffmpeg not found` | Install ffmpeg (see Installation section) |
-| GUI doesn't start | Ensure `customtkinter` is installed; try `pip install --upgrade customtkinter` |
+|---|---|
+| Model download fails | Set `HF_TOKEN`; check the network/proxy (`HTTPS_PROXY` is honoured) |
+| Build fails in `llama-cpp-sys-2` or `mp3lame-sys` | Install CMake and a C/C++ compiler |
+| `CUDA out of memory` | Use the 0.6B model, keep `LLM_GPU_LAYERS = 0`, close other GPU programs |
+| GUI does not start on Linux (`xkbcommon`) | Install `libxkbcommon-x11-0` (Debian/Ubuntu) and GPU/OpenGL drivers |
+| Voice inconsistency between chunks | Check `cache/voice_reference.wav`; delete `output/<project>/chunks` after changing model or reference |
+| Want to test without models | `text-to-audiobook --mock-models run` |
 
 ## References
 
 - **Llama 3.2**: [Meta Model Card](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct)
-- **llama.cpp**: [Official Repo](https://github.com/ggerganov/llama.cpp)
-- **Qwen3-TTS**: [Qwen TTS](https://huggingface.co/Qwen)
-- **pydub**: [GitHub](https://github.com/jiaaro/pydub)
-- **noisereduce**: [GitHub](https://github.com/timsainb/noisereduce)
+- **llama.cpp**: [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp), Rust bindings [llama-cpp-2](https://github.com/utilityai/llama-cpp-rs)
+- **Qwen3-TTS**: [Qwen on Hugging Face](https://huggingface.co/Qwen), Candle port [qwen3-tts-rs](https://github.com/danielclough/qwen3-tts-rs)
+- **Candle**: [huggingface/candle](https://github.com/huggingface/candle)
+- **egui**: [emilk/egui](https://github.com/emilk/egui)
 
 ## Continuous Integration & Deployment
 
-This project uses GitHub Actions for automated:
-
-- **Testing**: Multi-platform tests (Windows, Linux, macOS) on Python 3.9, 3.10, 3.11
-- **Code Quality**: Black formatter, isort import checks, flake8 linting, mypy type checking
-- **Security Scanning**: Bandit security checks, safety vulnerability scanning, pip-audit
-- **Docker Building**: Automatic Docker image builds and pushes to GitHub Container Registry
-- **Release Management**: Automated building and uploading of standalone executables (EXE, binary, APP)
-
-### CI/CD Workflows
-
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
-| Tests | Push to main/master/develop, PRs | Run test suite on multiple platforms |
-| Code Quality | Push to main/master/develop, PRs | Lint, format, and type checking |
-| Build & Release | Git tags (v*), manual trigger | Build installers for all platforms |
-| Docker Build | Tags, main branch, manual | Build and push Docker images |
+| Tests | Push to main/master/develop, PRs | `cargo test` on Linux, Windows and macOS |
+| Code Quality | Push to main/master/develop, PRs | `cargo fmt --check`, `cargo clippy` |
+| Build & Release | Git tags (v*), manual trigger | release binaries for all platforms |
+| Docker Build | Tags, main branch, manual | build and push the headless Docker image |
 
-### Automated Releases
+### Docker
 
-Tag a release to automatically:
-1. Run full test suite
-2. Build Windows EXE, Linux binary, and macOS APP
-3. Create GitHub release with binaries attached
-4. Build and push Docker image to GHCR
+The image contains the headless binary (no GUI). Mount the project root at `/app`:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+docker compose run --rm ai-tts run
+docker compose run --rm ai-tts generate -p MyBook
 ```
-
-### Docker Support
-
-Standalone Docker image available from GitHub Container Registry:
-
-```bash
-docker pull ghcr.io/yourusername/ai-tts-v7:latest
-docker run -it ghcr.io/yourusername/ai-tts-v7:latest
-```
-
-See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed Docker and cloud deployment instructions.
 
 ## License
 
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**, a copyleft open-source license ensuring freedom and transparency:
 
 - ✅ Commercial use allowed
-- ✅ Modifications allowed  
+- ✅ Modifications allowed
 - ✅ Distribution allowed
 - ⚠️ Modifications must be shared under AGPL
 - ⚠️ Network deployments require source code access
 
 Dependencies & Models:
 
-- All Python dependencies use permissive licenses (Apache 2.0, MIT, BSD)
+- Rust dependencies use permissive licenses (MIT, Apache 2.0, BSD, Zlib); the bundled LAME MP3 encoder is LGPL
 - Qwen3-TTS: Apache 2.0
 - Llama-3.2: Meta Community License Agreement
 
-See [LICENSE](LICENSE) for full AGPL-3.0 text and [License notice](docs/LICENSES_NOTICES.md) for comprehensive dependency and model license documentation.
+See [LICENSE](LICENSE) for full AGPL-3.0 text and [License notice](docs/LICENSES_NOTICES.md) for dependency and model license documentation.

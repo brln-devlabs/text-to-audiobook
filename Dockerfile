@@ -1,57 +1,36 @@
 # Build stage
-FROM python:3.10-slim as builder
+FROM rust:1-bookworm AS builder
 
 WORKDIR /build
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    git \
+# cmake and clang for llama.cpp, LAME and SQLite
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    clang \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
-COPY requirements.txt .
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
 
-# Create wheels for all dependencies (including their own dependencies)
-RUN pip install --upgrade pip && \
-    pip install wheel && \
-    pip wheel --no-cache-dir --wheel-dir /build/wheels -r requirements.txt
+# Headless build: CLI with LLM and TTS, no GUI
+RUN cargo build --release --locked --no-default-features --features llm,tts
 
 # Final stage
-FROM python:3.10-slim
+FROM debian:bookworm-slim
 
-WORKDIR /app
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    libsndfile1 \
-    ffmpeg \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy wheels from builder
-COPY --from=builder /build/wheels /wheels
-COPY --from=builder /build/requirements.txt .
+COPY --from=builder /build/target/release/text-to-audiobook /usr/local/bin/text-to-audiobook
+COPY settings.json /app/settings.json
 
-# Install dependencies from wheels (pip will resolve dependencies from wheel files)
-RUN pip install --no-cache-dir --no-index --find-links /wheels -r requirements.txt && \
-    rm -rf /wheels
+WORKDIR /app
+RUN mkdir -p /app/input /app/output /app/cache /app/logs /app/models
 
-# Copy application code
-COPY . .
+ENV TTA_ROOT=/app
+ENV HF_HOME=/app/models/huggingface
 
-# Create directories for input/output
-RUN mkdir -p /app/input /app/output /app/cache
-
-# Expose port for potential web interface (future)
-EXPOSE 8000
-
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
-ENV LOG_LEVEL_CONSOLE=INFO
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)"
-
-# Default command
-CMD ["python", "main.py"]
+ENTRYPOINT ["text-to-audiobook"]
+CMD ["run"]

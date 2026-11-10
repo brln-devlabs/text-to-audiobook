@@ -18,7 +18,7 @@ Before creating bug reports, please check the issue list as you might find out t
 * **Describe the behavior you observed after following the steps**
 * **Explain which behavior you expected to see instead and why**
 * **Include screenshots and animated GIFs if possible**
-* **Include your environment details** (OS, Python version, GPU type, etc.)
+* **Include your environment details** (OS, Rust version, build features, GPU type, etc.)
 * **Include relevant logs** from `logs/pipeline.log`
 
 ### Suggesting Enhancements
@@ -34,20 +34,20 @@ When creating an enhancement suggestion, please include:
 ### Pull Requests
 
 * Fill in the required template
-* Follow the Python styleguides
+* Follow the Rust styleguide below
 * Include appropriate test cases
 * Update documentation as needed
 * End all files with a newline
 
 ## Styleguides
 
-### Python Styleguide
+### Rust Styleguide
 
-* Use [PEP 8](https://www.python.org/dev/peps/pep-0008/)
+* Format with `cargo fmt`
+* Keep `cargo clippy --all-targets -- -D warnings` clean
 * Use meaningful variable names
 * Keep functions focused and single-purpose
-* Add docstrings to public functions
-* Use type hints where applicable
+* Add doc comments (`///`) to public items
 
 ### Commit Messages
 
@@ -66,47 +66,14 @@ When creating an enhancement suggestion, please include:
 ## Development Setup
 
 1. Fork the repository
-2. Clone your fork: `git clone https://github.com/yourusername/ai-tts-v7.git`
-3. Create a virtual environment: `python -m venv venv`
-4. Activate it: `source venv/bin/activate` (or `venv\Scripts\activate` on Windows)
-5. Install dev dependencies: `pip install -r requirements.txt && pip install pytest pytest-cov`
-6. Create a branch for your changes: `git checkout -b my-feature-branch`
+2. Clone your fork: `git clone https://github.com/yourusername/text-to-audiobook.git`
+3. Install Rust (https://rustup.rs/), CMake and a C/C++ compiler
+4. Build: `cargo build`
+5. Create a branch for your changes: `git checkout -b my-feature-branch`
 
 ## Testing
 
 * Write tests for new features
-* Ensure all existing tests pass: `pytest -v`
-* Check test coverage: `pytest --cov=src`
-* Run the full test suite before submitting a PR
-
-## Running Tests Locally
-
-```bash
-# Run all tests
-pytest -v
-
-# Run with coverage
-pytest --cov=src --cov-report=html
-
-# Run specific test file
-pytest tests/test_gui.py
-
-# Run specific test
-pytest tests/test_gui.py::test_gui_launch
-```
-
-## Before You Submit
-
-* Check your code against PEP 8
-* Run the test suite
-* Update the README.md if you've changed functionality
-* Add tests for new functionality
-* Ensure your branch is up-to-date with main
-
-## Additional Notes
-
-* Ask any questions in discussions before starting work on significant changes
-* Consider opening an issue first to discuss major changes
-* Be respectful and constructive in all interactions
-
-Thank you for contributing to text-to-audiobook! 🚀
+* Ensure all existing tests pass: `cargo test`
+* The tests use mock models; `cargo run -- --mock-models run` tries the whole pipeline without models
+* Run `cargo fmt --check` and `cargo clippy --all-targets` before submitting a PR
