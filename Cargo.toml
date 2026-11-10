@@ -20,8 +20,12 @@ gui = ["dep:eframe", "dep:rfd"]
 llm = ["dep:llama-cpp-2"]
 # Qwen3-TTS über Candle
 tts = ["dep:qwen_tts", "dep:candle-core"]
-# NVIDIA-GPU für LLM und TTS (CUDA-Toolkit nötig)
-cuda = ["llm", "tts", "llama-cpp-2/cuda", "qwen_tts/cuda", "candle-core/cuda"]
+# NVIDIA-GPU für die Sprachausgabe (CUDA-Toolkit mit nvcc nötig)
+cuda = ["tts", "qwen_tts/cuda", "candle-core/cuda"]
+# Zusätzlich Llama auf der NVIDIA-GPU (nur sinnvoll mit LLM_GPU_LAYERS != 0).
+# llama.cpp linkt CUDA statisch und sucht libcudart_static.a & Co. in
+# /usr/local/cuda, /opt/cuda oder $CUDA_LIBRARY_PATH.
+llm-cuda = ["llm", "cuda", "llama-cpp-2/cuda"]
 # Apple-GPU
 metal = ["llm", "tts", "llama-cpp-2/metal", "qwen_tts/metal", "candle-core/metal"]
 

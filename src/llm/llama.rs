@@ -63,6 +63,12 @@ impl LlamaCppBackend {
         } else {
             gpu_layers as u32
         };
+        if gpu_layers != 0 && !cfg!(any(feature = "llm-cuda", feature = "metal")) {
+            log::warn!(
+                "LLM_GPU_LAYERS = {gpu_layers}, but llama.cpp was built without GPU support \
+                 (build with --features llm-cuda); running the LLM on the CPU"
+            );
+        }
         let params = LlamaModelParams::default().with_n_gpu_layers(n_gpu);
         let model = LlamaModel::load_from_file(backend, path, &params)
             .with_context(|| format!("loading {}", path.display()))?;

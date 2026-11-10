@@ -70,9 +70,12 @@ The binary is `target/release/text-to-audiobook` (`.exe` on Windows).
 GPU builds:
 
 ```bash
-cargo build --release --features cuda    # NVIDIA
-cargo build --release --features metal   # Apple Silicon
+cargo build --release --features cuda      # NVIDIA: Qwen3-TTS on the GPU, Llama on the CPU
+cargo build --release --features llm-cuda  # NVIDIA: additionally Llama on the GPU
+cargo build --release --features metal     # Apple Silicon
 ```
+
+`cuda` is enough with the default `LLM_GPU_LAYERS = 0`. `llm-cuda` links CUDA statically into llama.cpp and needs the static CUDA libraries (`libcudart_static.a`, `libcublas_static.a`, `libcublasLt_static.a`, `libculibos.a`) in `/usr/local/cuda`, `/opt/cuda` or the directory given in `CUDA_LIBRARY_PATH`.
 
 Headless build without GUI (servers, Docker):
 
@@ -246,6 +249,7 @@ Format: `YYYY-MM-DD HH:MM:SS,mmm | LEVEL | module | message`
 |---|---|
 | Model download fails | Set `HF_TOKEN`; check the network/proxy (`HTTPS_PROXY` is honoured) |
 | Build fails in `llama-cpp-sys-2` or `mp3lame-sys` | Install CMake and a C/C++ compiler |
+| `could not find native static library cudart_static` | Build with `--features cuda` (Llama stays on the CPU); for `llm-cuda` set `CUDA_LIBRARY_PATH` to the directory with the static CUDA libraries |
 | `CUDA out of memory` | Use the 0.6B model, keep `LLM_GPU_LAYERS = 0`, close other GPU programs |
 | GUI does not start on Linux (`xkbcommon`) | Install `libxkbcommon-x11-0` (Debian/Ubuntu) and GPU/OpenGL drivers |
 | Voice inconsistency between chunks | Check `cache/voice_reference.wav`; delete `output/<project>/chunks` after changing model or reference |
