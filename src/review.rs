@@ -193,8 +193,12 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
             Ok(n) if n > 0 => n,
             _ => continue,
         };
-        // Part of a date like 03.05.1995 or 1.2.
-        if text[..num.start()].ends_with(|ch: char| ch == '.' || ch.is_ascii_digit()) {
+        // Part of a decimal number ("0,75.", "0.75.") or a date ("03.05.1995", "1.2.").
+        let before = &text[..num.start()];
+        let after_separator = before
+            .strip_suffix(['.', ','])
+            .is_some_and(|b| b.ends_with(|ch: char| ch.is_ascii_digit()));
+        if after_separator || before.ends_with(|ch: char| ch.is_ascii_digit()) {
             continue;
         }
         if is_month(next) || next == "Uhr" {
@@ -465,6 +469,8 @@ mod tests {
         assert!(find_spots("Hans V. Müller und ein XL-Shirt, die CD.").is_empty());
         assert_eq!(originals("Karl V. dankte ab."), ["V."]);
         assert!(find_spots("Es war am 03.05.1995.").is_empty());
+        assert!(find_spots("BLEU(g, s) > 0,75. Dieser Wert wurde gewählt.").is_empty());
+        assert!(find_spots("Der Wert lag bei 0.75. dann war es gut.").is_empty());
     }
 
     #[test]

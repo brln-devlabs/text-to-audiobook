@@ -191,9 +191,20 @@ fn parse_number(s: &str) -> Option<(u64, Option<String>)> {
     Some((int.parse().ok()?, frac))
 }
 
+static THOUSANDS: LazyLock<Regex> = LazyLock::new(|| re(r"^\d{1,3}(?:\.\d{3})+(?:,\d+)?$"));
+
 /// Number token in words: cardinal, decimal ("drei Komma eins vier"),
-/// leading zeros digit by digit.
+/// leading zeros digit by digit. A decimal point ("0.75") is read like a
+/// decimal comma; "3.500" with groups of three is a thousands separator.
 fn number_words(token: &str) -> String {
+    if !token.contains(',')
+        && token.contains('.')
+        && !THOUSANDS.is_match(token)
+        && let Some((int, frac)) = token.split_once('.')
+        && let Ok(i) = int.parse::<u64>()
+    {
+        return format!("{} Komma {}", cardinal(i), digits(frac));
+    }
     let plain = !token.contains(['.', ',']);
     if plain && token.len() > 1 && token.starts_with('0') {
         return digits(token);
@@ -221,6 +232,13 @@ fn count_with(token: &str, singular: &str, plural: &str, feminine: bool) -> Stri
 
 /// Money: "5,50" + "Euro" -> "fünf Euro fünfzig".
 fn money(token: &str, currency: &str) -> String {
+    // "1.50" with a decimal point reads like "1,50".
+    let token = if !token.contains(',') && token.contains('.') && !THOUSANDS.is_match(token) {
+        token.replace('.', ",")
+    } else {
+        token.to_string()
+    };
+    let token = token.as_str();
     let Some((whole, frac)) = parse_number(token) else {
         return format!("{token} {currency}");
     };
@@ -464,22 +482,23 @@ static DAY_MONTH: LazyLock<Regex> = LazyLock::new(|| {
         r"\b(\d{1,2})\.\s+(Januar|Jänner|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\b",
     )
 });
+static DAY_MONTH_NUMERIC: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\d{1,2})\.(\d{1,2})\.(\s|$)"));
 static TIME: LazyLock<Regex> =
     LazyLock::new(|| re(r"\b([01]?\d|2[0-3])(?:[:.]([0-5]\d))?\s?Uhr\b"));
 static ORDINAL: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\d{1,4})\.(\s+)(\p{L})"));
 static RANGE: LazyLock<Regex> =
     LazyLock::new(|| re(r"(^|[^\d.,\-–])(\d{1,4})\s?[–-]\s?(\d{1,4})($|[^\d.,\-–])"));
 static CURRENCY_PREFIX: LazyLock<Regex> =
-    LazyLock::new(|| re(r"(€|\$)\s?(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+(?:,\d+)?)"));
+    LazyLock::new(|| re(r"(€|\$)\s?(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+\.\d+|\d+(?:,\d+)?)"));
 static WITH_UNIT: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"\b(\d{1,3}(?:\.\d{3})+(?:,(?:\d+|–|-))?|\d+(?:,(?:\d+|–|-))?)\s?(?:(%|€|\$|°C|°)|(km/h|km|kg|cm|mm|ml|mg|m|g|l|h|min|EUR|Euro|Prozent|Dollar)\b)",
+        r"\b(\d{1,3}(?:\.\d{3})+(?:,(?:\d+|–|-))?|\d+\.\d+|\d+(?:,(?:\d+|–|-))?)\s?(?:(%|€|\$|°C|°)|(km/h|km|kg|cm|mm|ml|mg|m|g|l|h|min|EUR|Euro|Prozent|Dollar)\b)",
     )
 });
 static NEGATIVE: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[\s(])[-–−](\d)"));
 static DECADE: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\d+)er\b"));
 static NUMBER: LazyLock<Regex> =
-    LazyLock::new(|| re(r"\b(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+,\d+|\d+)\b"));
+    LazyLock::new(|| re(r"\b(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+\.\d+|\d+,\d+|\d+)\b"));
 
 /// Spell out numbers, dates, times, units and abbreviations in German text.
 pub fn normalize(text: &str) -> String {
@@ -544,6 +563,24 @@ pub fn normalize(text: &str) -> String {
         let (p1, p2) = prev_words(&t, at);
         let ending = ordinal_ending(p1.as_deref(), p2.as_deref()).unwrap_or("er");
         Some(format!("{} {}", ordinal(day, ending), &c[2]))
+    });
+
+    // am 3.5. -> am dritten fünften (only with a clear article/preposition)
+    let t = s.clone();
+    s = replace_ctx(&DAY_MONTH_NUMERIC, &t, |c, at| {
+        let day: u64 = c[1].parse().ok()?;
+        let month: u64 = c[2].parse().ok()?;
+        if !(1..=31).contains(&day) || !(1..=12).contains(&month) {
+            return None;
+        }
+        let (p1, p2) = prev_words(&t, at);
+        let ending = ordinal_ending(p1.as_deref(), p2.as_deref())?;
+        Some(format!(
+            "{} {}{}",
+            ordinal(day, ending),
+            ordinal(month, ending),
+            &c[3]
+        ))
     });
 
     // 14:30 Uhr -> vierzehn Uhr dreißig
@@ -756,6 +793,28 @@ mod tests {
             ),
             ("Platz 1.", "Platz eins."),
             ("Kein Covid19 hier.", "Kein Covid19 hier."),
+            (
+                "BLEU > 0,75. Dieser Wert.",
+                "BLEU > null Komma sieben fünf. Dieser Wert.",
+            ),
+            (
+                "BLEU > 0.75. Dieser Wert.",
+                "BLEU > null Komma sieben fünf. Dieser Wert.",
+            ),
+            (
+                "Der Faktor 1.5 reicht.",
+                "Der Faktor eins Komma fünf reicht.",
+            ),
+            (
+                "Es kostet 3.500 Euro.",
+                "Es kostet dreitausendfünfhundert Euro.",
+            ),
+            (
+                "Um 0.5 % gestiegen.",
+                "Um null Komma fünf Prozent gestiegen.",
+            ),
+            ("Am 3.5. kam er.", "Am dritten fünften kam er."),
+            ("Für $1.50 zu haben.", "Für ein Dollar fünfzig zu haben."),
         ];
         for (input, expected) in cases {
             assert_eq!(normalize(input), expected, "input: {input}");
