@@ -120,6 +120,10 @@ pub struct Settings {
     /// Guided review of the spots the number rules cannot decide (ordinals
     /// without clear context, Roman numerals); needs `NORMALIZE_NUMBERS`.
     pub review_numbers: bool,
+    /// After synthesis, audit every chunk (speech share, volume, clipping,
+    /// voice match), delete failed ones and synthesize them again with a
+    /// different seed.
+    pub auto_cleanup: bool,
     /// Runtime only (not stored): run without models; the LLM answers with
     /// neutral defaults and the TTS writes silence. For tests and dry runs.
     #[serde(skip)]
@@ -151,6 +155,7 @@ impl Default for Settings {
             use_llm: false,
             normalize_numbers: false,
             review_numbers: false,
+            auto_cleanup: false,
             mock_models: false,
         }
     }
@@ -180,6 +185,7 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "USE_LLM",
     "NORMALIZE_NUMBERS",
     "REVIEW_NUMBERS",
+    "AUTO_CLEANUP",
 ];
 
 fn value_to_i64(v: &Value) -> Option<i64> {
@@ -281,6 +287,7 @@ impl Settings {
             "USE_LLM" => set(&mut self.use_llm, value_to_bool(v)),
             "NORMALIZE_NUMBERS" => set(&mut self.normalize_numbers, value_to_bool(v)),
             "REVIEW_NUMBERS" => set(&mut self.review_numbers, value_to_bool(v)),
+            "AUTO_CLEANUP" => set(&mut self.auto_cleanup, value_to_bool(v)),
             _ => false,
         }
     }

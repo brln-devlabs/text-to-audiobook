@@ -426,6 +426,7 @@ pub fn prepare_segments_for_project(
 pub fn prepare_segments(
     cfg: &Config,
     input_dir: &Path,
+    output_dir: &Path,
     progress: Progress,
     stop: Option<&StopFlag>,
     selected: Option<&[String]>,
@@ -473,6 +474,17 @@ pub fn prepare_segments(
                 break;
             }
             let segs = prepare_segments_for_project(cfg, project, progress, Some(&mut llm), stop)?;
+            if !segs.is_empty() {
+                match write_texts(cfg, &project.name, &segs, output_dir) {
+                    Ok(p) => emit(
+                        progress,
+                        &format!("[{}] text: {}", project.name, p.display()),
+                    ),
+                    Err(e) => {
+                        log::warn!("[{}] could not write the text files: {e:#}", project.name)
+                    }
+                }
+            }
             results.insert(project.name.clone(), segs);
         }
         Ok(())
@@ -595,6 +607,68 @@ fn assemble_outputs(
     Ok(outputs)
 }
 
+/// Audit rounds of `AUTO_CLEANUP`: audit, delete failures, synthesize them
+/// again with another seed. The chunks of the last round are kept, so no
+/// text goes missing.
+pub const CLEANUP_ROUNDS: usize = 2;
+
+/// Write the prepared text of a project to `<output>/<project>/text/`:
+/// `prepared.txt` (as cleaned and segmented) and, with `NORMALIZE_NUMBERS`,
+/// `spoken.txt` (as it is spoken, review decisions applied). Every line
+/// starts with the number of its audio chunk (`chunk_NNNNNN.wav`).
+pub fn write_texts(
+    cfg: &Config,
+    project_name: &str,
+    segments: &[Segment],
+    output_dir: &Path,
+) -> Result<PathBuf> {
+    let dir = output_dir.join(project_name).join("text");
+    std::fs::create_dir_all(&dir)?;
+    let store = crate::review::ReviewStore::load(&cfg.paths.project_cache_dir(project_name));
+    let render = |spoken: bool| -> String {
+        let title = segments
+            .first()
+            .and_then(|s| s.story_title.clone())
+            .unwrap_or_else(|| project_name.to_string());
+        let mut out = format!("# {title}\n");
+        let mut source: Option<&str> = None;
+        let mut in_paragraph = false;
+        for (i, seg) in segments.iter().enumerate() {
+            if source != Some(seg.source_file.as_str()) {
+                let chapter = seg.chapter_title.as_deref().unwrap_or(&seg.source_file);
+                out.push_str(&format!("\n## {chapter} ({})\n\n", seg.source_file));
+                source = Some(&seg.source_file);
+            } else if !in_paragraph {
+                out.push('\n');
+            }
+            let text = if spoken {
+                let language = crate::tts::resolve_language(&cfg.settings, seg.language.as_deref());
+                crate::tts::spoken_text(
+                    &cfg.settings,
+                    Some(&store),
+                    i,
+                    &seg.normalized_text,
+                    &language,
+                )
+            } else {
+                seg.normalized_text.clone()
+            };
+            out.push_str(&format!("{i:06} | {text}\n"));
+            in_paragraph = !seg.ends_paragraph;
+        }
+        out
+    };
+    let prepared = dir.join("prepared.txt");
+    std::fs::write(&prepared, render(false))?;
+    let spoken = dir.join("spoken.txt");
+    if cfg.settings.normalize_numbers {
+        std::fs::write(&spoken, render(true))?;
+    } else if spoken.exists() {
+        std::fs::remove_file(&spoken)?;
+    }
+    Ok(prepared)
+}
+
 /// Stage 2 for one project; returns the (first) assembled MP3.
 #[allow(clippy::too_many_arguments)]
 pub fn generate_audio_for_project(
@@ -641,8 +715,61 @@ pub fn generate_audio_for_project(
                 );
             }
         }
+        if let Err(e) = write_texts(cfg, project_name, segments, output_root) {
+            log::warn!("[{project_name}] could not write the text files: {e:#}");
+        }
         tts.set_review(Some(store));
-        let wav_paths = tts.process_all(segments, &project_out.join("chunks"), stop, chunk_done);
+        let chunks_dir = project_out.join("chunks");
+        let wav_paths = (|| -> Result<Vec<PathBuf>> {
+            let mut wavs = tts.process_all(segments, &chunks_dir, stop, chunk_done)?;
+            if !cfg.settings.auto_cleanup {
+                return Ok(wavs);
+            }
+            let report = |m: &str| emit(progress, m);
+            for round in 1..=CLEANUP_ROUNDS {
+                if stopped(stop) {
+                    break;
+                }
+                emit(
+                    progress,
+                    &format!("[{project_name}] auditing chunks (round {round})..."),
+                );
+                let results = cleanup::cleanup_noisy_chunks(
+                    output_root,
+                    Some(&[project_name.to_string()]),
+                    &report,
+                    &cfg.paths.voice_ref_path(),
+                    &Thresholds::default(),
+                );
+                let deleted = results.get(project_name).map_or(0, |r| r.deleted.len());
+                if deleted == 0 {
+                    emit(
+                        progress,
+                        &format!("[{project_name}] all chunks passed the audit"),
+                    );
+                    break;
+                }
+                emit(
+                    progress,
+                    &format!(
+                        "[{project_name}] {deleted} chunk file(s) failed, synthesizing them again with a new seed"
+                    ),
+                );
+                tts.set_seed_offset(round as u64);
+                let again = tts.process_all(segments, &chunks_dir, stop, None);
+                tts.set_seed_offset(0);
+                wavs = again?;
+                if round == CLEANUP_ROUNDS {
+                    emit(
+                        progress,
+                        &format!(
+                            "[{project_name}] kept the chunks of the last attempt after {CLEANUP_ROUNDS} rounds"
+                        ),
+                    );
+                }
+            }
+            Ok(wavs)
+        })();
         tts.set_review(None);
         let wav_paths = wav_paths?;
         if stopped(stop) {
@@ -983,7 +1110,7 @@ pub fn run(
     output_dir: &Path,
     progress: Progress,
 ) -> Result<IndexMap<String, Option<PathBuf>>> {
-    let by_project = prepare_segments(cfg, input_dir, progress, None, None)?;
+    let by_project = prepare_segments(cfg, input_dir, output_dir, progress, None, None)?;
     if by_project.is_empty() {
         return Ok(IndexMap::new());
     }
@@ -1078,8 +1205,15 @@ mod tests {
         std::fs::write(book.join("2_Ende.md"), "Das Ende.").unwrap();
         std::fs::write(c.paths.input_dir.join("Kurz.md"), "Eine kurze Geschichte.").unwrap();
 
-        let segs =
-            prepare_segments(&c, &c.paths.input_dir.clone(), &no_progress, None, None).unwrap();
+        let segs = prepare_segments(
+            &c,
+            &c.paths.input_dir.clone(),
+            &c.paths.output_dir.clone(),
+            &no_progress,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(segs.keys().collect::<Vec<_>>(), ["Book", "Kurz"]);
         let book_segs = &segs["Book"];
         assert_eq!(book_segs.len(), 3);
@@ -1120,6 +1254,54 @@ mod tests {
         // Stage 3 on mock silence deletes everything.
         let report = cleanup_noisy_chunks(&c, &out, Some(&["Kurz".to_string()]), &no_progress);
         assert_eq!(report["Kurz"].deleted.len(), 1);
+
+        // Prepared text with chunk numbers and chapter headings.
+        let text = std::fs::read_to_string(out.join("Book/text/prepared.txt")).unwrap();
+        assert!(text.starts_with("# Book\n"), "{text}");
+        assert!(text.contains("## Titel (1_Anfang)"), "{text}");
+        assert!(
+            text.contains("000000 | Erster Absatz. Mit zwei Sätzen.\n\n000001 | Zweiter Absatz.")
+        );
+        assert!(text.contains("000002 | Das Ende."));
+        assert!(!out.join("Book/text/spoken.txt").exists());
+    }
+
+    #[test]
+    fn auto_cleanup_regenerates_and_keeps_last_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = cfg(dir.path());
+        c.settings.auto_cleanup = true;
+        c.settings.normalize_numbers = true;
+        std::fs::write(
+            c.paths.input_dir.join("Kurz.md"),
+            "Am 3. Mai 1995 war es kalt.",
+        )
+        .unwrap();
+        let input = c.paths.input_dir.clone();
+        let out = c.paths.output_dir.clone();
+        let segs = prepare_segments(&c, &input, &out, &no_progress, None, None).unwrap();
+        let msgs = std::sync::Mutex::new(Vec::<String>::new());
+        let progress = |m: &str| msgs.lock().unwrap().push(m.to_string());
+        let res = generate_audio(&c, &segs, &out, &progress, None, None).unwrap();
+        // Mock silence fails every audit: two rounds of regeneration, then kept.
+        let msgs = msgs.into_inner().unwrap();
+        assert_eq!(
+            msgs.iter()
+                .filter(|m| m.contains("synthesizing them again"))
+                .count(),
+            CLEANUP_ROUNDS
+        );
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("kept the chunks of the last attempt"))
+        );
+        assert!(out.join("Kurz/chunks/chunk_000000.wav").exists());
+        assert!(res["Kurz"].is_some());
+        let spoken = std::fs::read_to_string(out.join("Kurz/text/spoken.txt")).unwrap();
+        assert!(
+            spoken.contains("000000 | Am dritten Mai neunzehnhundertfünfundneunzig war es kalt."),
+            "{spoken}"
+        );
     }
 
     #[test]
@@ -1132,6 +1314,7 @@ mod tests {
         let r = prepare_segments(
             &c,
             &c.paths.input_dir.clone(),
+            &c.paths.output_dir.clone(),
             &no_progress,
             Some(&stop),
             None,

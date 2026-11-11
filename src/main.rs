@@ -202,7 +202,7 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Prepare => {
-            pipeline::prepare_segments(&cfg, &input, &no_progress, None, selected(&cli))?;
+            pipeline::prepare_segments(&cfg, &input, &output, &no_progress, None, selected(&cli))?;
         }
         Command::Generate => {
             let segs = cached(&cfg, &input, &cli);
@@ -236,8 +236,14 @@ fn run(cli: Cli) -> Result<()> {
             pipeline::assemble_final(&cfg, &segs, &output, &no_progress, None)?;
         }
         Command::Run => {
-            let segs =
-                pipeline::prepare_segments(&cfg, &input, &no_progress, None, selected(&cli))?;
+            let segs = pipeline::prepare_segments(
+                &cfg,
+                &input,
+                &output,
+                &no_progress,
+                None,
+                selected(&cli),
+            )?;
             if !segs.is_empty() {
                 pipeline::generate_audio(&cfg, &segs, &output, &no_progress, None, None)?;
             }

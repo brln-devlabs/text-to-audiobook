@@ -53,6 +53,17 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   Programm nach, wenn noch Stellen offen sind. Ohne Oberfläche: `text-to-audiobook review`.
   Die Entscheidungen liegen in `cache/<Textname>/review.json`; „Clear Cache“ löscht sie mit.
   Sie gelten für neu erzeugte Audiostücke.
+- **Zwei Knöpfe:** „1. Prepare Segments“ bereitet den Text vor und schreibt ihn nach
+  `output/<Textname>/text/prepared.txt`, eine Zeile pro Audiostück mit dessen Nummer
+  (`000012 | …` gehört zu `chunk_000012.wav`). Mit `NORMALIZE_NUMBERS` kommt `spoken.txt`
+  dazu: der Text, wie er gesprochen wird. „2. Generate Audio“ erzeugt die Sprache und baut das
+  Hörbuch zusammen.
+- **Automatische Qualitätsprüfung** (`AUTO_CLEANUP = true`, Settings → Audio): nach der
+  Sprachausgabe prüft das Programm jedes Audiostück (Sprachanteil, Lautstärke,
+  Übersteuerung, Stimmähnlichkeit), löscht durchgefallene und erzeugt sie mit einem anderen
+  Seed neu. Das geschieht bis zu zweimal; danach bleibt der letzte Versuch erhalten, damit
+  kein Text fehlt. Ohne Oberfläche gibt es weiter `text-to-audiobook cleanup` und
+  `text-to-audiobook assemble`.
 - **Neutrale Erzählstimme** im `NARRATOR_PROMPT` und deutscher Text für die automatisch
   erzeugte Referenzstimme.
 
@@ -151,6 +162,7 @@ Projektordner, zum Beispiel:
   "TTS_DTYPE": "bfloat16",
   "NORMALIZE_NUMBERS": true,
   "REVIEW_NUMBERS": true,
+  "AUTO_CLEANUP": true,
   "USE_LLM": false,
   "SILENCE_AFTER_PARAGRAPH_MS": 1200,
   "SILENCE_AFTER_PERIOD_MS": 500
@@ -163,7 +175,7 @@ Projektordner, zum Beispiel:
 
 - Kapitel werden in Lesereihenfolge nummeriert und zusammengefügt. Die Python-Version
   sortierte sie alphabetisch, sodass `10_…` vor `2_…` kam.
-- Der Stimmvergleich in Schritt 3 („Cleanup Noisy“) ist aktiv. In der Python-Version fehlte
+- Der Stimmvergleich der Qualitätsprüfung ist aktiv. In der Python-Version fehlte
   dafür die Bibliothek librosa, der Vergleich entfiel dort stillschweigend.
 - „Force Stop“ hält am nächsten möglichen Punkt an und löscht das angefangene Audiostück.
   Ein Modellaufruf, der schon läuft, wird noch zu Ende gerechnet.

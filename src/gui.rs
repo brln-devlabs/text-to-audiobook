@@ -27,7 +27,6 @@ use eframe::egui::{self, Color32, RichText};
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
 
-use crate::audio::cleanup::ProjectCleanup;
 use crate::cancel::StopFlag;
 use crate::config::{self, Config, Settings};
 use crate::logging;
@@ -64,7 +63,6 @@ pub fn launch(cfg: Config, input_dir: PathBuf, output_dir: PathBuf) -> Result<()
 enum Event {
     Stage1Done(SegmentsByProject),
     Stage2Done,
-    CleanupDone(IndexMap<String, ProjectCleanup>),
     RefreshProjects,
 }
 
@@ -224,6 +222,7 @@ impl SettingsForm {
                             "Silence after paragraph (ms)",
                             None,
                         ),
+                        field("AUTO_CLEANUP", "Auto cleanup (audit + regenerate)", bools()),
                     ],
                 ),
                 (
@@ -274,6 +273,7 @@ fn apply_fields<'a>(
         "USE_LLM",
         "NORMALIZE_NUMBERS",
         "REVIEW_NUMBERS",
+        "AUTO_CLEANUP",
     ];
     let mut applied = Map::new();
     for (key, raw) in fields {
@@ -414,7 +414,6 @@ pub struct App {
     voice_prompt: String,
     quick: QuickConfig,
     settings_form: Option<SettingsForm>,
-    cleanup_report: Option<IndexMap<String, ProjectCleanup>>,
     confirm_close: bool,
     allow_close: bool,
     shared: Arc<Shared>,
@@ -453,7 +452,6 @@ impl App {
             projects: Vec::new(),
             segments: IndexMap::new(),
             settings_form: None,
-            cleanup_report: None,
             confirm_close: false,
             allow_close: false,
             shared: Arc::new(Shared::default()),
@@ -565,10 +563,17 @@ impl App {
             selected.join(", ")
         );
         let input = self.input_dir.clone();
+        let output = self.output_dir.clone();
         self.spawn(move |cfg, stop, shared| {
             let progress = |_: &str| shared.bump_progress(0.02, 0.95);
-            match pipeline::prepare_segments(&cfg, &input, &progress, Some(&stop), Some(&selected))
-            {
+            match pipeline::prepare_segments(
+                &cfg,
+                &input,
+                &output,
+                &progress,
+                Some(&stop),
+                Some(&selected),
+            ) {
                 Ok(segs) => {
                     shared.push(Event::Stage1Done(segs));
                     shared.push(Event::RefreshProjects);
@@ -752,69 +757,6 @@ impl App {
                 Err(e) => log::error!("Stage 2 failed: {e:#}"),
             }
             shared.push(Event::Stage2Done);
-        });
-    }
-
-    fn start_cleanup(&mut self) {
-        let selected = self.selected_names();
-        if selected.is_empty() {
-            log::warn!("No stories selected. Tick at least one project to clean.");
-            return;
-        }
-        self.stop.clear();
-        self.reset_progress();
-        log::info!(
-            "Stage 3 (Cleanup): scanning {} project(s) for noisy chunks...",
-            selected.len()
-        );
-        let output = self.output_dir.clone();
-        self.spawn(move |cfg, _stop, shared| {
-            let progress = |_: &str| shared.bump_progress(0.05, 0.95);
-            let results = pipeline::cleanup_noisy_chunks(&cfg, &output, Some(&selected), &progress);
-            let edited: usize = results.values().map(|r| r.edited).sum();
-            let deleted: usize = results.values().map(|r| r.deleted.len()).sum();
-            if deleted > 0 {
-                log::info!(
-                    "Cleanup done: {edited} cleaned, {deleted} deleted. Re-run Stage 2 to re-synthesize the deleted chunks, then Stage 4 to assemble."
-                );
-            } else {
-                log::info!("Cleanup done: {edited} chunk(s) cleaned, none deleted.");
-            }
-            shared.set_progress(1.0);
-            shared.push(Event::CleanupDone(results));
-        });
-    }
-
-    fn start_assemble_final(&mut self) {
-        if self.segments.is_empty() {
-            log::warn!("No segments loaded; run Stage 1 first.");
-            return;
-        }
-        let to_process = self.selected_segments();
-        if to_process.is_empty() {
-            log::warn!("No selected projects have cached segments.");
-            return;
-        }
-        self.stop.clear();
-        self.reset_progress();
-        log::info!(
-            "Stage 4 (Assemble Final): assembling {} project(s)...",
-            to_process.len()
-        );
-        let output = self.output_dir.clone();
-        self.spawn(move |cfg, stop, shared| {
-            let progress = |_: &str| shared.bump_progress(0.05, 0.95);
-            match pipeline::assemble_final(&cfg, &to_process, &output, &progress, Some(&stop)) {
-                Ok(_) => {
-                    shared.set_progress(1.0);
-                    if stop.is_set() {
-                        log::info!("Assemble Final stopped by user.");
-                    } else {
-                        log::info!("Assemble Final completed successfully.");
-                    }
-                }
-                Err(e) => log::error!("Assemble Final failed: {e:#}"),
-            }
         });
     }
 
@@ -1022,7 +964,6 @@ impl App {
             match e {
                 Event::Stage1Done(segs) => self.on_stage1_done(segs),
                 Event::Stage2Done => {}
-                Event::CleanupDone(r) => self.cleanup_report = Some(r),
                 Event::RefreshProjects => self.refresh_project_list(),
             }
         }
@@ -1190,7 +1131,7 @@ impl App {
     fn buttons_ui(&mut self, ui: &mut egui::Ui) {
         let busy = self.busy();
         egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.columns(4, |cols| {
+            ui.columns(2, |cols| {
                 let full = |ui: &mut egui::Ui, enabled: bool, b: egui::Button| {
                     ui.add_enabled(enabled, b.min_size(egui::vec2(ui.available_width(), 28.0)))
                         .clicked()
@@ -1202,26 +1143,17 @@ impl App {
                 ) {
                     self.start_stage1();
                 }
+                let generate = if self.cfg.settings.auto_cleanup {
+                    "2. Generate Audio (with cleanup)"
+                } else {
+                    "2. Generate Audio"
+                };
                 if full(
                     &mut cols[1],
                     !busy && !self.segments.is_empty(),
-                    egui::Button::new("2. Generate Audio"),
+                    egui::Button::new(generate).fill(GREEN),
                 ) {
                     self.start_stage2();
-                }
-                if full(
-                    &mut cols[2],
-                    !busy,
-                    egui::Button::new("3. Cleanup Noisy").fill(BLUE),
-                ) {
-                    self.start_cleanup();
-                }
-                if full(
-                    &mut cols[3],
-                    !busy,
-                    egui::Button::new("4. Assemble Final").fill(GREEN),
-                ) {
-                    self.start_assemble_final();
                 }
             });
         });
@@ -1380,62 +1312,6 @@ impl App {
         }
     }
 
-    fn cleanup_report_window(&mut self, ctx: &egui::Context) {
-        let Some(results) = &self.cleanup_report else {
-            return;
-        };
-        let edited: usize = results.values().map(|r| r.edited).sum();
-        let deleted: usize = results.values().map(|r| r.deleted.len()).sum();
-        let mut header = format!(
-            "Cleaned in place: {edited} chunk(s)\nDeleted (failed audit): {deleted} chunk(s)\n"
-        );
-        header.push_str(if deleted > 0 {
-            "Re-run Stage 2 to regenerate deleted chunks, then Stage 4 to assemble."
-        } else {
-            "All chunks passed discriminator + volume + voice-match checks."
-        });
-        let mut lines = Vec::new();
-        for (name, r) in results {
-            lines.push(format!(
-                "── {name} — cleaned {}, deleted {} ──",
-                r.edited,
-                r.deleted.len()
-            ));
-            if r.deleted.is_empty() {
-                lines.push("  (none deleted)".into());
-            }
-            for (file, reason) in &r.deleted {
-                lines.push(format!("  ✗ {file}    {reason}"));
-            }
-            lines.push(String::new());
-        }
-        let body = if lines.is_empty() {
-            "No projects scanned.".to_string()
-        } else {
-            lines.join("\n")
-        };
-        let mut open = true;
-        let mut close = false;
-        egui::Window::new("Cleanup Report")
-            .open(&mut open)
-            .default_size([680.0, 460.0])
-            .show(ctx, |ui| {
-                ui.label(header);
-                egui::ScrollArea::both().max_height(340.0).show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut body.as_str())
-                            .font(egui::TextStyle::Monospace),
-                    );
-                });
-                if ui.button("Close").clicked() {
-                    close = true;
-                }
-            });
-        if close || !open {
-            self.cleanup_report = None;
-        }
-    }
-
     fn review_window(&mut self, ctx: &egui::Context) {
         let Some(session) = self.review.as_mut() else {
             return;
@@ -1563,7 +1439,17 @@ impl App {
                 });
             });
         if close || !open || generate {
-            self.review = None;
+            // Update spoken.txt with the decisions.
+            if let Some(session) = self.review.take() {
+                for name in session.stores.keys() {
+                    if let Some(segs) = self.segments.get(name)
+                        && let Err(e) =
+                            pipeline::write_texts(&self.cfg, name, segs, &self.output_dir)
+                    {
+                        log::warn!("[{name}] could not write the text files: {e:#}");
+                    }
+                }
+            }
         }
         if generate {
             self.skip_stage2_guard = true;
@@ -1706,7 +1592,6 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| self.projects_ui(ui));
 
         self.settings_window(&ctx);
-        self.cleanup_report_window(&ctx);
         self.review_window(&ctx);
         self.stage2_guard_dialog(&ctx);
         self.close_handling(&ctx);
