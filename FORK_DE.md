@@ -48,7 +48,10 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   Satz mit Vorschlägen („dritte“, „dritten“, „Dritter“, „drei.“, „der Vierte“, „des
   Vierten“ …). Ein Klick übernimmt den Vorschlag und springt zur nächsten Stelle; mit
   „Apply to all identical spots“ gilt die Wahl für alle gleichen Stellen. „Program default“
-  überlässt die Stelle den Regeln, „Skip“ lässt sie offen. Das Fenster lässt sich jederzeit
+  überlässt die Stelle den Regeln, „Skip“ lässt sie offen. Bei Gliederungspunkten am
+  Satzanfang („II. Kapitalistische Revolution“) steht „Zweitens:“ zuerst. Ist der Satz allein
+  nicht eindeutig, klappt „▼ More context“ je drei Abschnitte davor und danach auf; bei der
+  nächsten Stelle ist die Ansicht wieder zu (Kommandozeile: `m`). Das Fenster lässt sich jederzeit
   über „Review Numbers“ neben der Projektliste öffnen; vor „2. Generate Audio“ fragt das
   Programm nach, wenn noch Stellen offen sind. Ohne Oberfläche: `text-to-audiobook review`.
   Die Entscheidungen liegen in `cache/<Textname>/review.json`; „Clear Cache“ löscht sie mit.
