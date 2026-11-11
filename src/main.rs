@@ -124,7 +124,7 @@ fn review_cli(cfg: &Config, input: &std::path::Path, cli: &Cli) -> Result<()> {
             for (i, c) in it.spot.choices.iter().enumerate() {
                 println!("  {:>2}) {:<22} {}", i + 1, c.replacement, c.hint);
             }
-            println!("   d) program default   s) skip   q) quit");
+            println!("   d) program default   s) skip   m) more context   q) quit");
             let choice = loop {
                 print!("> ");
                 std::io::stdout().flush()?;
@@ -138,12 +138,35 @@ fn review_cli(cfg: &Config, input: &std::path::Path, cli: &Cli) -> Result<()> {
                         return Ok(());
                     }
                     "s" => break None,
+                    "m" => {
+                        let texts: Vec<String> =
+                            segments.iter().map(|s| s.normalized_text.clone()).collect();
+                        let (above, below) = text_to_audiobook::review::neighbours(
+                            &texts,
+                            it.segment,
+                            text_to_audiobook::review::CONTEXT_SEGMENTS,
+                        );
+                        for (n, t) in above {
+                            println!("  {n:06} | {t}");
+                        }
+                        let t = &texts[it.segment];
+                        println!(
+                            "> {:06} | {}[[{}]]{}",
+                            it.segment,
+                            &t[..it.spot.start],
+                            it.spot.original,
+                            &t[it.spot.end..]
+                        );
+                        for (n, t) in below {
+                            println!("  {n:06} | {t}");
+                        }
+                    }
                     "d" => break Some(None),
                     n => match n.parse::<usize>() {
                         Ok(i) if (1..=it.spot.choices.len()).contains(&i) => {
                             break Some(Some(it.spot.choices[i - 1].replacement.clone()));
                         }
-                        _ => println!("Please enter a number, d, s or q."),
+                        _ => println!("Please enter a number, d, s, m or q."),
                     },
                 }
             };

@@ -442,6 +442,23 @@ fn context(text: &str, start: usize, end: usize) -> (String, String) {
     (before, after)
 }
 
+/// Number of segments shown above and below with "more context".
+pub const CONTEXT_SEGMENTS: usize = 3;
+
+/// Segments with their numbers.
+pub type Numbered<'a> = Vec<(usize, &'a str)>;
+
+/// Up to `n` segments before and after `segment`, with their numbers.
+pub fn neighbours(texts: &[String], segment: usize, n: usize) -> (Numbered<'_>, Numbered<'_>) {
+    let start = segment.saturating_sub(n);
+    let end = (segment + 1 + n).min(texts.len());
+    let above = (start..segment.min(texts.len()))
+        .map(|i| (i, texts[i].as_str()))
+        .collect();
+    let below = (segment + 1..end).map(|i| (i, texts[i].as_str())).collect();
+    (above, below)
+}
+
 /// Whether the review applies to this segment (German text, normalization on).
 pub fn applies(settings: &Settings, seg: &Segment) -> bool {
     settings.normalize_numbers && resolve_language(settings, seg.language.as_deref()) == "german"
@@ -531,6 +548,17 @@ mod tests {
         assert_eq!(spots[1].key, ENUMERATION_KEY);
         // Initials in a sentence are still skipped.
         assert!(find_spots("Er traf Hans V. Müller.").is_empty());
+    }
+
+    #[test]
+    fn neighbours_are_clamped() {
+        let texts: Vec<String> = (0..5).map(|i| format!("t{i}")).collect();
+        let (above, below) = neighbours(&texts, 1, 3);
+        assert_eq!(above, [(0, "t0")]);
+        assert_eq!(below, [(2, "t2"), (3, "t3"), (4, "t4")]);
+        let (above, below) = neighbours(&texts, 4, 3);
+        assert_eq!(above.len(), 3);
+        assert!(below.is_empty());
     }
 
     #[test]

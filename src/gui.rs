@@ -337,6 +337,11 @@ struct ReviewSession {
     then_generate: bool,
     /// All spots were already decided when the window opened.
     revisiting: bool,
+    /// Segment texts per project, for "more context".
+    texts: IndexMap<String, Vec<String>>,
+    /// Spot (position) whose surrounding segments are shown; resets as soon
+    /// as another spot is shown.
+    expanded_at: Option<usize>,
 }
 
 impl ReviewSession {
@@ -668,6 +673,7 @@ impl App {
             return;
         }
         let mut stores = IndexMap::new();
+        let mut texts = IndexMap::new();
         let mut all = Vec::new();
         for n in &names {
             let Some(segs) = self.segments.get(n) else {
@@ -676,6 +682,12 @@ impl App {
             let store = ReviewStore::load(&self.cfg.paths.project_cache_dir(n));
             all.extend(review::items(n, segs, &self.cfg.settings));
             stores.insert(n.clone(), store);
+            texts.insert(
+                n.clone(),
+                segs.iter()
+                    .map(|s| s.normalized_text.clone())
+                    .collect::<Vec<_>>(),
+            );
         }
         let mut session = ReviewSession {
             items: all,
@@ -684,6 +696,8 @@ impl App {
             apply_same: false,
             then_generate,
             revisiting: false,
+            texts,
+            expanded_at: None,
         };
         match (0..session.items.len()).find(|i| session.decided(*i).is_none()) {
             Some(first) => session.pos = first,
@@ -1365,21 +1379,81 @@ impl App {
                     });
                 });
                 ui.separator();
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        ui.label(RichText::new(&item.before).size(15.0));
-                        ui.label(
-                            RichText::new(&item.spot.original)
-                                .size(15.0)
-                                .strong()
-                                .color(Color32::BLACK)
-                                .background_color(Color32::from_rgb(0xe0, 0xb0, 0x40)),
-                        );
-                        ui.label(RichText::new(&item.after).size(15.0));
+                let expanded = session.expanded_at == Some(pos);
+                let full = session
+                    .texts
+                    .get(&item.project)
+                    .and_then(|t| t.get(item.segment))
+                    .cloned();
+                let neighbour_label = |ui: &mut egui::Ui, n: usize, text: &str| {
+                    ui.label(
+                        RichText::new(format!("{n:06} | {text}"))
+                            .size(13.0)
+                            .color(Color32::GRAY),
+                    );
+                };
+                let texts = session
+                    .texts
+                    .get(&item.project)
+                    .cloned()
+                    .unwrap_or_default();
+                let (above, below) =
+                    review::neighbours(&texts, item.segment, review::CONTEXT_SEGMENTS);
+                let body = |ui: &mut egui::Ui| {
+                    if expanded {
+                        for (n, t) in &above {
+                            neighbour_label(ui, *n, t);
+                        }
+                    }
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        // Expanded: the whole segment instead of the excerpt.
+                        let (before, after) = match (&full, expanded) {
+                            (Some(t), true) => (
+                                t[..item.spot.start].to_string(),
+                                t[item.spot.end..].to_string(),
+                            ),
+                            _ => (item.before.clone(), item.after.clone()),
+                        };
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.label(RichText::new(before).size(15.0));
+                            ui.label(
+                                RichText::new(&item.spot.original)
+                                    .size(15.0)
+                                    .strong()
+                                    .color(Color32::BLACK)
+                                    .background_color(Color32::from_rgb(0xe0, 0xb0, 0x40)),
+                            );
+                            ui.label(RichText::new(after).size(15.0));
+                        });
                     });
-                });
+                    if expanded {
+                        for (n, t) in &below {
+                            neighbour_label(ui, *n, t);
+                        }
+                    }
+                };
+                if expanded {
+                    egui::ScrollArea::vertical()
+                        .id_salt("review_context")
+                        .max_height(320.0)
+                        .show(ui, body);
+                } else {
+                    body(ui);
+                }
+                let toggle = if expanded {
+                    "▲ Less context"
+                } else {
+                    "▼ More context"
+                };
+                if ui
+                    .small_button(toggle)
+                    .on_hover_text("Show the 3 segments above and below")
+                    .clicked()
+                {
+                    session.expanded_at = if expanded { None } else { Some(pos) };
+                }
                 let current = session.decided(pos).cloned();
                 if let Some(d) = &current {
                     ui.label(
