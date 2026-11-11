@@ -31,6 +31,7 @@ pub mod llm;
 pub mod logging;
 pub mod markdown_cleaner;
 pub mod natsort;
+pub mod normalize_de;
 pub mod pipeline;
 pub mod pyval;
 pub mod segment;

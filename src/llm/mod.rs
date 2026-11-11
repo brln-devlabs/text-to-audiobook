@@ -446,6 +446,192 @@ fn split_emotion_sentences(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Number words (English and German, cardinal and ordinal) in file names.
+fn number_word(word: &str) -> Option<u32> {
+    const EN: [&str; 20] = [
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+    ];
+    const EN_ORD: [&str; 20] = [
+        "first",
+        "second",
+        "third",
+        "fourth",
+        "fifth",
+        "sixth",
+        "seventh",
+        "eighth",
+        "ninth",
+        "tenth",
+        "eleventh",
+        "twelfth",
+        "thirteenth",
+        "fourteenth",
+        "fifteenth",
+        "sixteenth",
+        "seventeenth",
+        "eighteenth",
+        "nineteenth",
+        "twentieth",
+    ];
+    const DE: [&str; 20] = [
+        "eins",
+        "zwei",
+        "drei",
+        "vier",
+        "fünf",
+        "sechs",
+        "sieben",
+        "acht",
+        "neun",
+        "zehn",
+        "elf",
+        "zwölf",
+        "dreizehn",
+        "vierzehn",
+        "fünfzehn",
+        "sechzehn",
+        "siebzehn",
+        "achtzehn",
+        "neunzehn",
+        "zwanzig",
+    ];
+    const DE_ORD: [&str; 20] = [
+        "erst",
+        "zweit",
+        "dritt",
+        "viert",
+        "fünft",
+        "sechst",
+        "siebt",
+        "acht",
+        "neunt",
+        "zehnt",
+        "elft",
+        "zwölft",
+        "dreizehnt",
+        "vierzehnt",
+        "fünfzehnt",
+        "sechzehnt",
+        "siebzehnt",
+        "achtzehnt",
+        "neunzehnt",
+        "zwanzigst",
+    ];
+    let w = word.to_lowercase();
+    for table in [&EN, &EN_ORD, &DE] {
+        if let Some(i) = table.iter().position(|t| *t == w) {
+            return Some(i as u32 + 1);
+        }
+    }
+    for ending in ["es", "er", "en", "e"] {
+        if let Some(stem) = w.strip_suffix(ending)
+            && let Some(i) = DE_ORD.iter().position(|t| *t == stem)
+        {
+            return Some(i as u32 + 1);
+        }
+    }
+    None
+}
+
+/// Sort key: number words replaced by digits ("Chapter_Two" -> "Chapter_2").
+fn ordinal_key(name: &str) -> String {
+    let mut out = String::new();
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        match number_word(word) {
+            Some(n) => out.push_str(&n.to_string()),
+            None => out.push_str(word),
+        }
+        word.clear();
+    };
+    for c in name.chars() {
+        if c.is_alphabetic() {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
+/// Position of a file in the book from its name: 0 = front matter
+/// (prologue, preface, ...), 2 = back matter (epilogue, appendix, ...).
+fn structural_rank(name: &str) -> u8 {
+    const FRONT: &[&str] = &[
+        "prolog",
+        "vorwort",
+        "vorrede",
+        "geleitwort",
+        "einleitung",
+        "preface",
+        "foreword",
+        "introduction",
+        "intro",
+    ];
+    const BACK: &[&str] = &[
+        "epilog",
+        "nachwort",
+        "anhang",
+        "glossar",
+        "danksagung",
+        "afterword",
+        "appendix",
+        "glossary",
+        "acknowledg",
+    ];
+    let lower = name.to_lowercase();
+    if FRONT.iter().any(|k| lower.contains(k)) {
+        0
+    } else if BACK.iter().any(|k| lower.contains(k)) {
+        2
+    } else {
+        1
+    }
+}
+
+/// Reading order without the LLM: natural sort with number words
+/// ("Chapter_Two" after "Chapter_One"), front matter first, back matter last.
+pub fn rule_order<S: AsRef<str>>(names: &[S]) -> Vec<String> {
+    let mut v: Vec<String> = names.iter().map(|s| s.as_ref().to_string()).collect();
+    v.sort_by(|a, b| {
+        structural_rank(a)
+            .cmp(&structural_rank(b))
+            .then_with(|| crate::natsort::natural_cmp(&ordinal_key(a), &ordinal_key(b)))
+    });
+    v
+}
+
+/// Fallbacks for titles when the LLM is off or finds nothing.
+#[derive(Debug, Clone, Default)]
+pub struct ProjectHints {
+    /// Story title (the project name).
+    pub story_title: Option<String>,
+    /// Per source file (stem): chapter number in reading order and the first
+    /// Markdown heading.
+    pub chapters: indexmap::IndexMap<String, (i64, Option<String>)>,
+}
+
 pub struct LlmNormalizer {
     pub model_path: PathBuf,
     llm: Option<Box<dyn LlmBackend>>,
@@ -455,6 +641,8 @@ pub struct LlmNormalizer {
     pub gpu_layers: i32,
     /// Never load a model (see [`Settings::mock_models`]).
     pub mock: bool,
+    /// `USE_LLM`: load the model at all.
+    pub enabled: bool,
 }
 
 impl LlmNormalizer {
@@ -465,6 +653,7 @@ impl LlmNormalizer {
             max_retries: settings.llm_max_retries,
             gpu_layers: settings.llm_gpu_layers,
             mock: settings.mock_models,
+            enabled: settings.use_llm,
         }
     }
 
@@ -476,6 +665,7 @@ impl LlmNormalizer {
             max_retries: settings.llm_max_retries,
             gpu_layers: settings.llm_gpu_layers,
             mock: false,
+            enabled: true,
         }
     }
 
@@ -486,6 +676,10 @@ impl LlmNormalizer {
     /// Load the GGUF model (downloading it on first use). Failures are logged
     /// and leave the normalizer in mock mode, like the Python version.
     pub fn load(&mut self) {
+        if !self.enabled {
+            log::info!("LLM disabled (USE_LLM = false): stage 1 uses file names and headings");
+            return;
+        }
         if self.mock {
             log::info!("Mock mode: LLM not loaded, using neutral defaults");
             return;
@@ -506,7 +700,10 @@ impl LlmNormalizer {
         }
         #[cfg(not(feature = "llm"))]
         {
-            log::warn!("llama.cpp support not compiled in (feature \"llm\"), using mock mode");
+            log::warn!(
+                "USE_LLM is set, but llama.cpp support is not compiled in \
+                 (build with --features llm); stage 1 uses file names and headings"
+            );
         }
     }
 
@@ -652,11 +849,20 @@ impl LlmNormalizer {
     /// Language of `text`, combining the LLM with a Unicode-script check
     /// that rejects answers contradicted by the characters in the text.
     pub fn detect_language(&mut self, text: &str) -> Result<String> {
-        if self.llm.is_none() || text.trim().is_empty() {
+        if text.trim().is_empty() {
             return Ok(DEFAULT_LANGUAGE.into());
         }
         let sample = pyval::prefix(text, 1000);
         let plausible = script_candidates(sample);
+        if self.llm.is_none() {
+            // Without the LLM only the script decides; otherwise Qwen3-TTS
+            // detects the language itself.
+            return Ok(if plausible.len() == 1 {
+                plausible.iter().next().unwrap().to_string()
+            } else {
+                "auto".into()
+            });
+        }
         // Fast path: the script alone decides.
         if plausible.len() == 1 {
             return Ok(plausible.iter().next().unwrap().to_string());
@@ -701,7 +907,7 @@ impl LlmNormalizer {
     pub fn sort_files(&mut self, files: &[FilePreview]) -> Vec<String> {
         let names_in: Vec<String> = files.iter().map(|f| f.name.clone()).collect();
         if self.llm.is_none() || files.len() <= 1 {
-            return natsorted(&names_in);
+            return rule_order(&names_in);
         }
         let listing = files
             .iter()
@@ -760,8 +966,8 @@ impl LlmNormalizer {
             Ok(valid)
         })();
         result.unwrap_or_else(|e| {
-            log::warn!("File sort failed: {e:#}; falling back to natsort");
-            natsorted(&names_in)
+            log::warn!("File sort failed: {e:#}; falling back to rule-based order");
+            rule_order(&names_in)
         })
     }
 
@@ -1237,6 +1443,7 @@ impl LlmNormalizer {
         chunks: &[Chunk],
         cache_dir: &Path,
         settings: &Settings,
+        hints: &ProjectHints,
         progress: ProgressCb,
         stop: Option<&StopFlag>,
     ) -> Result<Vec<Segment>> {
@@ -1449,35 +1656,40 @@ impl LlmNormalizer {
             if !story_title_detected {
                 story_title = Some(
                     self.detect_story_title(&seg.text)
+                        .or_else(|| hints.story_title.clone())
                         .unwrap_or_else(|| "Audiobook".into()),
                 );
                 story_title_detected = true;
                 if story_title.as_deref() != Some("Audiobook") {
                     report(
                         progress,
-                        &format!(
-                            "  detected story title: '{}'",
-                            story_title.as_deref().unwrap_or("")
-                        ),
+                        &format!("  story title: '{}'", story_title.as_deref().unwrap_or("")),
                     );
                 }
             }
 
             if new_source {
                 let info = self.detect_chapter_info(&seg.text);
+                let (hint_number, hint_title) = hints
+                    .chapters
+                    .get(&source_file)
+                    .cloned()
+                    .unwrap_or((current_chapter_number, None));
                 if let Some(num) = info.chapter_number {
                     current_chapter_number = num;
                     report(
                         progress,
                         &format!("  detected chapter number: {current_chapter_number}"),
                     );
+                } else {
+                    current_chapter_number = hint_number;
                 }
-                match info.chapter_title {
+                match info.chapter_title.or(hint_title) {
                     Some(t) => {
                         current_chapter_title = t;
                         report(
                             progress,
-                            &format!("  detected chapter title: '{current_chapter_title}'"),
+                            &format!("  chapter title: '{current_chapter_title}'"),
                         );
                     }
                     None => current_chapter_title = format!("Chapter {current_chapter_number}"),
@@ -1618,7 +1830,13 @@ mod tests {
         let r = n.normalize("Sample text");
         assert_eq!(r.normalized_text, "Sample text");
         assert_eq!(r.emotion, "neutral");
-        assert_eq!(n.detect_language("hola mundo").unwrap(), DEFAULT_LANGUAGE);
+        // Without the LLM only the script decides; Latin text is left to the TTS.
+        assert_eq!(n.detect_language("hola mundo").unwrap(), "auto");
+        assert_eq!(
+            n.detect_language("Привет, как дела у тебя сегодня утром?")
+                .unwrap(),
+            "russian"
+        );
         assert_eq!(n.detect_speaking_speed("x"), "normal");
         assert_eq!(n.detect_story_title("x"), None);
         assert_eq!(n.sort_files(&[]), Vec::<String>::new());
@@ -1742,6 +1960,83 @@ mod tests {
     }
 
     #[test]
+    fn rule_order_without_llm() {
+        assert_eq!(
+            rule_order(&[
+                "Epilog.md",
+                "Chapter_Two.md",
+                "Prolog.md",
+                "Chapter_One.md",
+                "Chapter_Ten.md"
+            ]),
+            [
+                "Prolog.md",
+                "Chapter_One.md",
+                "Chapter_Two.md",
+                "Chapter_Ten.md",
+                "Epilog.md"
+            ]
+        );
+        assert_eq!(
+            rule_order(&[
+                "Kapitel_dritte.md",
+                "Anhang.md",
+                "Kapitel_erstes.md",
+                "Vorwort.md",
+                "Kapitel_2.md"
+            ]),
+            [
+                "Vorwort.md",
+                "Kapitel_erstes.md",
+                "Kapitel_2.md",
+                "Kapitel_dritte.md",
+                "Anhang.md"
+            ]
+        );
+        let mut n = LlmNormalizer::new("fake.gguf", &settings());
+        let files: Vec<FilePreview> = ["b10.md", "b9.md"]
+            .iter()
+            .map(|n| FilePreview {
+                name: n.to_string(),
+                preview: String::new(),
+            })
+            .collect();
+        assert_eq!(n.sort_files(&files), ["b9.md", "b10.md"]);
+    }
+
+    #[test]
+    fn disabled_llm_is_not_loaded() {
+        let mut n = LlmNormalizer::new("/nonexistent/model.gguf", &settings());
+        assert!(!n.enabled);
+        n.load();
+        assert!(!n.is_loaded());
+    }
+
+    #[test]
+    fn hints_fill_titles_without_llm() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cs = chunks();
+        cs[0].source_file = "01_anfang".into();
+        cs[1].source_file = "02_ende".into();
+        let mut hints = ProjectHints {
+            story_title: Some("Mein Buch".into()),
+            ..Default::default()
+        };
+        hints
+            .chapters
+            .insert("01_anfang".into(), (1, Some("Der Anfang".into())));
+        hints.chapters.insert("02_ende".into(), (2, None));
+        let mut n = LlmNormalizer::new("fake.gguf", &settings());
+        let segs = n
+            .process_all(&cs, dir.path(), &settings(), &hints, None, None)
+            .unwrap();
+        assert_eq!(segs[0].story_title.as_deref(), Some("Mein Buch"));
+        assert_eq!(segs[0].chapter_title.as_deref(), Some("Der Anfang"));
+        assert_eq!(segs[1].chapter_number, 2);
+        assert_eq!(segs[1].chapter_title.as_deref(), Some("Chapter 2"));
+    }
+
+    #[test]
     fn reconstruct_from_anchors_covers_source() {
         let src = "Intro words. The storm came suddenly. Everyone ran home.";
         let anchors = vec![
@@ -1774,7 +2069,14 @@ mod tests {
         let cache = dir.path().join("cache");
         let mut n = LlmNormalizer::new("fake.gguf", &settings());
         let segs = n
-            .process_all(&chunks(), &cache, &settings(), None, None)
+            .process_all(
+                &chunks(),
+                &cache,
+                &settings(),
+                &ProjectHints::default(),
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(segs.len(), 2);
         assert!(cache.join("chunk_000.json").exists());
@@ -1792,15 +2094,29 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("cache");
         let mut n = LlmNormalizer::new("fake.gguf", &settings());
-        n.process_all(&chunks(), &cache, &settings(), None, None)
-            .unwrap();
+        n.process_all(
+            &chunks(),
+            &cache,
+            &settings(),
+            &ProjectHints::default(),
+            None,
+            None,
+        )
+        .unwrap();
         let t1 = std::fs::metadata(cache.join("chunk_000.json"))
             .unwrap()
             .modified()
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        n.process_all(&chunks(), &cache, &settings(), None, None)
-            .unwrap();
+        n.process_all(
+            &chunks(),
+            &cache,
+            &settings(),
+            &ProjectHints::default(),
+            None,
+            None,
+        )
+        .unwrap();
         let t2 = std::fs::metadata(cache.join("chunk_000.json"))
             .unwrap()
             .modified()
@@ -1825,7 +2141,9 @@ mod tests {
         let text = "Ceci est une phrase française assez longue pour le test.";
         cs[0].text = text.into();
         cs[1].text = text.into();
-        let segs = n.process_all(&cs, dir.path(), &s, None, None).unwrap();
+        let segs = n
+            .process_all(&cs, dir.path(), &s, &ProjectHints::default(), None, None)
+            .unwrap();
         assert_eq!(segs[0].language.as_deref(), Some("french"));
         assert_eq!(segs[0].story_title.as_deref(), Some("Le Livre"));
         assert_eq!(segs[0].chapter_number, 4);
@@ -1842,7 +2160,14 @@ mod tests {
         stop.set();
         let mut n = LlmNormalizer::new("fake.gguf", &settings());
         let segs = n
-            .process_all(&chunks(), dir.path(), &settings(), None, Some(&stop))
+            .process_all(
+                &chunks(),
+                dir.path(),
+                &settings(),
+                &ProjectHints::default(),
+                None,
+                Some(&stop),
+            )
             .unwrap();
         assert!(segs.is_empty());
     }

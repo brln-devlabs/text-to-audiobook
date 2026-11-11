@@ -14,6 +14,7 @@ COPY src ./src
 
 # Headless build: CLI with LLM and TTS, no GUI
 RUN cargo build --release --locked --no-default-features --features llm,tts
+# (the LLM is only loaded with USE_LLM = true)
 
 # Final stage
 FROM debian:bookworm-slim
