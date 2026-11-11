@@ -9,7 +9,8 @@ An open-source text-to-speech application that turns Markdown texts into audiobo
 ## ✨ Features
 
 - 🎤 **Qwen3-TTS voice cloning** on [Candle](https://github.com/huggingface/candle) (CPU, CUDA or Metal), consistent narrator via voice anchoring
-- 🔢 **Number normalization** for German (optional): numbers, years, dates, ordinals, times, money, units and abbreviations are spelled out before synthesis
+- 🔢 **Number normalization** for German (optional): numbers, years, dates, ordinals, times, money, units, Roman numerals after "Kapitel"/"Teil"/… and abbreviations are spelled out before synthesis
+- ✅ **Guided number review** (optional): spots the rules cannot decide (ordinals without clear context, Roman numerals like "Heinrich IV.") are listed with suggested readings to click through
 - 🧠 **Optional LLM** (Llama 3.2 1B through [llama.cpp](https://github.com/ggml-org/llama.cpp)): emotion spans, language, chapter and story titles, reading order of chapter files. Without it, titles come from headings and the reading order from file names
 - 🎨 **Desktop GUI** (egui) with project list, progress/ETA and live log, plus a **CLI** for headless use and Docker
 - ⚡ **Audio pipeline**: Butterworth clean-up filters, crossfades, sentence/paragraph pauses, WAV + MP3 export (LAME built in, no ffmpeg needed)
@@ -23,7 +24,7 @@ An open-source text-to-speech application that turns Markdown texts into audiobo
 
 ![Main Interface](docs/img/01-main-interface.png)
 
-Input and output directories, the stories (projects) found in the input directory, the four stage buttons, progress and the live log.
+Input and output directories, the stories (projects) found in the input directory, the two stage buttons, progress and the live log.
 
 ### Voice Description
 
@@ -113,10 +114,10 @@ text-to-audiobook
 
 Select the input and output directories, tick the stories and run the stages:
 
-1. **Prepare Segments** – clean, chunk and analyse the texts (cached)
-2. **Generate Audio** – synthesize every segment, denoise, assemble
-3. **Cleanup Noisy** – audit the chunks; failed ones are deleted so stage 2 regenerates them
-4. **Assemble Final** – rebuild the audiobook from existing chunks without TTS
+1. **Prepare Segments** – clean, chunk and analyse the texts (cached); the result is written to `output/<project>/text/`
+2. **Generate Audio** – synthesize every segment, optionally audit and regenerate failed chunks (`AUTO_CLEANUP`), denoise, assemble
+
+The audit and the assembly without TTS remain available on the command line (`cleanup`, `assemble`).
 
 ### Command line
 
@@ -124,12 +125,13 @@ Select the input and output directories, tick the stories and run the stages:
 text-to-audiobook run                      # stage 1 + 2 for all projects
 text-to-audiobook prepare -p MyBook        # stage 1 for one project
 text-to-audiobook generate                 # stage 2 from the cache
-text-to-audiobook cleanup                  # stage 3
+text-to-audiobook cleanup                  # audit chunks only (AUTO_CLEANUP does this in generate)
 text-to-audiobook assemble                 # stage 4
 text-to-audiobook projects                 # list projects and cache state
 text-to-audiobook fix-languages            # re-check language outliers
 text-to-audiobook voice-ref                # regenerate the voice reference
 text-to-audiobook normalize "Am 3. Mai 1995 um 14:30 Uhr"   # preview NORMALIZE_NUMBERS
+text-to-audiobook review                   # decide uncertain number spots (REVIEW_NUMBERS)
 text-to-audiobook --mock-models run        # dry run without models (silence)
 ```
 
@@ -153,6 +155,9 @@ output/
     ├── final/
     │   ├── audiobook.mp3          # final audio (or chapter_01.mp3, ...)
     │   └── audiobook.wav          # WAV mirror
+    ├── text/
+    │   ├── prepared.txt           # prepared text, one line per chunk ("000012 | ...")
+    │   └── spoken.txt             # as spoken (with NORMALIZE_NUMBERS and review decisions)
     └── chunks/
         ├── chunk_000000.wav
         ├── chunk_000001_0.wav     # long segments are split into sub-parts
@@ -178,6 +183,8 @@ Edit `settings.json` in the project root or use the settings window. Keys and de
 | `SILENCE_AFTER_PERIOD_MS` | 500 | pause after a segment |
 | `SILENCE_AFTER_PARAGRAPH_MS` | 1200 | pause after a paragraph |
 | `NORMALIZE_NUMBERS` | false | spell out numbers, dates, times, units, abbreviations (German segments) |
+| `AUTO_CLEANUP` | false | after synthesis audit every chunk, delete failed ones and synthesize them again with another seed (2 rounds, the last attempt is kept) |
+| `REVIEW_NUMBERS` | false | guided review of spots the rules cannot decide (ordinals without clear context, Roman numerals); needs `NORMALIZE_NUMBERS` |
 | `USE_LLM` | false | use Llama in stage 1 (emotion spans, titles, file order, `auto` language); needs the `llm` feature |
 | `LLM_GPU_LAYERS` | 0 | Llama layers on the GPU (0 = CPU, -1 = all) |
 | `LLM_MAX_RETRIES` | 3 | attempts per LLM call |
@@ -222,7 +229,7 @@ With `USE_LLM = true`, **Llama-3.2-1B-Instruct** (4-bit GGUF) additionally order
 
 ### Stage 2: Audio generation
 1. Load **Qwen3-TTS** (0.6B or 1.7B Base); create `cache/voice_reference.wav` if missing
-2. With `NORMALIZE_NUMBERS`, German text gets numbers, dates and abbreviations spelled out
+2. With `NORMALIZE_NUMBERS`, German text gets numbers, dates and abbreviations spelled out; decisions from the number review (`cache/<project>/review.json`) are applied first
 3. Chunk 0 clones the voice reference → becomes the **anchor**
 4. Every later chunk clones the anchor (x-vector voice cloning), same seed each time
 5. Denoise each chunk (high-pass 60 Hz, low-pass 9 kHz)
@@ -238,7 +245,8 @@ The narrator voice is locked after the first chunk. Every following chunk uses t
 - **Number normalization** (`NORMALIZE_NUMBERS`, German) is new; the Python version's LLM-based normalization was disabled.
 - **CLI and Docker** run the pipeline headless; the GUI is optional (feature `gui`).
 - **Chapter order:** stage 2 and stage 4 number and join chapters in reading order. The Python version sorted chapters alphabetically, so `10_…` came before `2_…`.
-- **Voice-match check is active:** the MFCC check in stage 3 needed librosa, which was not a dependency, so the Python version skipped it. The Rust version computes the same MFCCs natively.
+- **Two stage buttons:** "Prepare Segments" and "Generate Audio"; the audit runs inside "Generate Audio" when `AUTO_CLEANUP` is on and regenerates failed chunks with a new seed (the same seed would give the same result).
+- **Voice-match check is active:** the MFCC check of the audit needed librosa, which was not a dependency, so the Python version skipped it. The Rust version computes the same MFCCs natively.
 - **ID3 tags** are stored in the WAV's RIFF `ID3 ` chunk and survive denoising and cleanup; the Python version prepended them to the file, and the next denoise removed them.
 - **Long books** are assembled in a streaming fashion (constant memory instead of repeated in-memory copies).
 - **Force Stop** stops at the next possible point (between sub-parts and model calls) and removes the partial chunk; a single model call that is already running finishes first.

@@ -138,6 +138,33 @@ fn split_after_sentence_end(text: &str) -> Vec<String> {
     out
 }
 
+/// Text as it is spoken: review decisions of segment `index` applied, then
+/// numbers spelled out (only with `NORMALIZE_NUMBERS` and German text).
+pub fn spoken_text(
+    settings: &Settings,
+    review: Option<&crate::review::ReviewStore>,
+    index: usize,
+    text: &str,
+    language: &str,
+) -> String {
+    if !settings.normalize_numbers {
+        return text.to_string();
+    }
+    if language != "german" {
+        log::debug!("NORMALIZE_NUMBERS only supports German; '{language}' text left as is");
+        return text.to_string();
+    }
+    let reviewed = match review {
+        Some(store) => store.apply(index, text),
+        None => text.to_string(),
+    };
+    let out = crate::normalize_de::normalize(&reviewed);
+    if out != text {
+        log::debug!("Normalized: {out}");
+    }
+    out
+}
+
 pub struct TtsEngine {
     pub model_name: String,
     backend: Option<Box<dyn TtsBackend>>,
@@ -145,6 +172,11 @@ pub struct TtsEngine {
     voice_ref_path: Option<PathBuf>,
     settings: Settings,
     paths: Paths,
+    /// Decisions from the number review of the current project.
+    review: Option<crate::review::ReviewStore>,
+    /// Added to `VOICE_SEED` when chunks are synthesized again after a
+    /// failed audit (the same seed would give the same result).
+    seed_offset: u64,
 }
 
 impl TtsEngine {
@@ -156,6 +188,8 @@ impl TtsEngine {
             voice_ref_path: None,
             settings: settings.clone(),
             paths: paths.clone(),
+            review: None,
+            seed_offset: 0,
         }
     }
 
@@ -357,7 +391,7 @@ impl TtsEngine {
         out_path: &Path,
         language: &str,
     ) -> Result<()> {
-        let seed = self.settings.voice_seed;
+        let seed = self.settings.voice_seed.wrapping_add(self.seed_offset);
         let backend = self.backend.as_mut().expect("backend checked by caller");
         let wave = backend.generate_voice_clone(
             text,
@@ -518,21 +552,26 @@ impl TtsEngine {
         }
     }
 
+    /// Use the review decisions of the project about to be synthesized.
+    pub fn set_review(&mut self, store: Option<crate::review::ReviewStore>) {
+        self.review = store;
+    }
+
+    /// Seed offset for the next synthesis calls (0 = `VOICE_SEED`).
+    pub fn set_seed_offset(&mut self, offset: u64) {
+        self.seed_offset = offset;
+    }
+
+    /// [`Self::prepare_text`] for segment `index`, after applying its review
+    /// decisions.
+    pub fn prepare_segment_text(&self, index: usize, text: &str, language: &str) -> String {
+        spoken_text(&self.settings, self.review.as_ref(), index, text, language)
+    }
+
     /// Text as sent to the TTS: with `NORMALIZE_NUMBERS` German segments get
     /// numbers, dates, units and abbreviations spelled out.
     pub fn prepare_text(&self, text: &str, language: &str) -> String {
-        if !self.settings.normalize_numbers {
-            return text.to_string();
-        }
-        if language != "german" {
-            log::debug!("NORMALIZE_NUMBERS only supports German; '{language}' text left as is");
-            return text.to_string();
-        }
-        let out = crate::normalize_de::normalize(text);
-        if out != text {
-            log::debug!("Normalized: {out}");
-        }
-        out
+        spoken_text(&self.settings, None, 0, text, language)
     }
 
     /// Existing WAVs of chunk `i`: `chunk_NNN.wav`, or `_0`, `_1`, ...
@@ -600,7 +639,7 @@ impl TtsEngine {
             } else {
                 self.anchor_path.clone()
             };
-            let text = self.prepare_text(&seg.normalized_text, &language);
+            let text = self.prepare_segment_text(i, &seg.normalized_text, &language);
             let result = self.synthesize(&text, ref_audio.as_deref(), &out_path, &language, stop);
             let paths = match result {
                 Ok(p) => p,
@@ -939,6 +978,87 @@ pub mod tests {
         assert_eq!(engine.prepare_text("Seit 1995.", "english"), "Seit 1995.");
         let (_dir, _fake, off) = setup(&Settings::default());
         assert_eq!(off.prepare_text("Seit 1995.", "german"), "Seit 1995.");
+    }
+
+    #[test]
+    fn review_decisions_are_applied_before_normalization() {
+        let s = Settings {
+            normalize_numbers: true,
+            ..Settings::default()
+        };
+        let (dir, fake, mut engine) = setup(&s);
+        let text = "Heinrich IV. war 3. im Rennen.";
+        let mut store = crate::review::ReviewStore::load(&dir.path().join("rev"));
+        for spot in crate::review::find_spots(text) {
+            let rep = if spot.original == "IV." {
+                "der Vierte"
+            } else {
+                "Dritter"
+            };
+            store.set(0, &spot, Some(rep.into()));
+        }
+        engine.set_review(Some(store));
+        engine
+            .process_all(&segs(&[(text, None)]), &dir.path().join("out"), None, None)
+            .unwrap();
+        assert_eq!(
+            fake.clone_calls.lock().unwrap()[0].0,
+            "Heinrich der Vierte war Dritter im Rennen."
+        );
+    }
+
+    #[test]
+    fn seed_offset_changes_the_seed() {
+        #[derive(Clone, Default)]
+        struct SeedTts(Arc<Mutex<Vec<u64>>>);
+        impl TtsBackend for SeedTts {
+            fn generate_voice_clone(
+                &mut self,
+                _t: &str,
+                _l: &str,
+                _r: &Path,
+                _te: f64,
+                _p: f64,
+                seed: u64,
+            ) -> Result<Wave> {
+                self.0.lock().unwrap().push(seed);
+                Ok(Wave {
+                    samples: vec![0.0; 100],
+                    sample_rate: 24000,
+                })
+            }
+            fn generate(&mut self, _t: &str, _l: &str, _te: f64, _p: f64, _s: u64) -> Result<Wave> {
+                Ok(Wave {
+                    samples: vec![0.0; 100],
+                    sample_rate: 24000,
+                })
+            }
+            fn count_tokens(&self, _t: &str) -> Option<usize> {
+                None
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        let seeds = SeedTts::default();
+        let mut e = TtsEngine::with_backend(Box::new(seeds.clone()), &Settings::default(), &paths);
+        e.synthesize(
+            "a",
+            Some(&dir.path().join("r.wav")),
+            &dir.path().join("a.wav"),
+            "german",
+            None,
+        )
+        .unwrap();
+        e.set_seed_offset(2);
+        e.synthesize(
+            "b",
+            Some(&dir.path().join("r.wav")),
+            &dir.path().join("b.wav"),
+            "german",
+            None,
+        )
+        .unwrap();
+        assert_eq!(*seeds.0.lock().unwrap(), [42, 44]);
     }
 
     #[test]

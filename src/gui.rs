@@ -27,11 +27,11 @@ use eframe::egui::{self, Color32, RichText};
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
 
-use crate::audio::cleanup::ProjectCleanup;
 use crate::cancel::StopFlag;
 use crate::config::{self, Config, Settings};
 use crate::logging;
 use crate::pipeline::{self, SegmentsByProject};
+use crate::review::{self, ReviewStore};
 use crate::tts::TtsEngine;
 
 const MAX_LOG_CHARS: usize = 400_000;
@@ -63,7 +63,6 @@ pub fn launch(cfg: Config, input_dir: PathBuf, output_dir: PathBuf) -> Result<()
 enum Event {
     Stage1Done(SegmentsByProject),
     Stage2Done,
-    CleanupDone(IndexMap<String, ProjectCleanup>),
     RefreshProjects,
 }
 
@@ -162,6 +161,7 @@ impl SettingsForm {
                     vec![
                         field("MAX_WORDS_PER_CHUNK", "Max words per chunk", None),
                         field("NORMALIZE_NUMBERS", "Spell out numbers (German)", bools()),
+                        field("REVIEW_NUMBERS", "Review uncertain numbers", bools()),
                     ],
                 ),
                 (
@@ -222,6 +222,7 @@ impl SettingsForm {
                             "Silence after paragraph (ms)",
                             None,
                         ),
+                        field("AUTO_CLEANUP", "Auto cleanup (audit + regenerate)", bools()),
                     ],
                 ),
                 (
@@ -271,6 +272,8 @@ fn apply_fields<'a>(
         "VOCALIZE_CHAPTER_NAMES",
         "USE_LLM",
         "NORMALIZE_NUMBERS",
+        "REVIEW_NUMBERS",
+        "AUTO_CLEANUP",
     ];
     let mut applied = Map::new();
     for (key, raw) in fields {
@@ -324,7 +327,85 @@ impl QuickConfig {
     }
 }
 
+/// Guided review of uncertain number spots.
+struct ReviewSession {
+    items: Vec<review::Item>,
+    pos: usize,
+    stores: IndexMap<String, ReviewStore>,
+    apply_same: bool,
+    /// Opened before stage 2: offer to start it when done.
+    then_generate: bool,
+    /// All spots were already decided when the window opened.
+    revisiting: bool,
+}
+
+impl ReviewSession {
+    fn decided(&self, i: usize) -> Option<&review::Decision> {
+        let it = &self.items[i];
+        self.stores.get(&it.project)?.get(it.segment, &it.spot)
+    }
+
+    fn open_count(&self) -> usize {
+        (0..self.items.len())
+            .filter(|i| self.decided(*i).is_none())
+            .count()
+    }
+
+    /// Store a decision (also for identical spots if wanted) and move on.
+    fn decide(&mut self, replacement: Option<String>) {
+        let current = self.items[self.pos].clone();
+        let targets: Vec<usize> = if self.apply_same {
+            (0..self.items.len())
+                .filter(|i| {
+                    *i == self.pos
+                        || (self.items[*i].spot.key == current.spot.key
+                            && self.decided(*i).is_none())
+                })
+                .collect()
+        } else {
+            vec![self.pos]
+        };
+        let mut touched: Vec<String> = Vec::new();
+        for i in targets {
+            let it = &self.items[i];
+            // Same key = same situation and choices: take the same reading.
+            let rep = replacement.clone();
+            if let Some(store) = self.stores.get_mut(&it.project) {
+                store.set(it.segment, &it.spot, rep);
+                if !touched.contains(&it.project) {
+                    touched.push(it.project.clone());
+                }
+            }
+        }
+        for p in touched {
+            if let Some(store) = self.stores.get(&p)
+                && let Err(e) = store.save()
+            {
+                log::error!("Could not save review decisions: {e:#}");
+            }
+        }
+        self.advance();
+    }
+
+    /// Next spot without a decision after the current one (or stay at the end).
+    fn advance(&mut self) {
+        let n = self.items.len();
+        if let Some(next) = (self.pos + 1..n)
+            .chain(0..self.pos)
+            .find(|i| self.decided(*i).is_none())
+        {
+            self.pos = next;
+        } else if self.revisiting && self.pos + 1 < n {
+            self.pos += 1;
+        }
+    }
+}
+
 pub struct App {
+    review: Option<ReviewSession>,
+    /// Stage 2 was requested while spots are open: number of open spots.
+    stage2_guard: Option<usize>,
+    skip_stage2_guard: bool,
     cfg: Config,
     input_dir: PathBuf,
     output_dir: PathBuf,
@@ -333,7 +414,6 @@ pub struct App {
     voice_prompt: String,
     quick: QuickConfig,
     settings_form: Option<SettingsForm>,
-    cleanup_report: Option<IndexMap<String, ProjectCleanup>>,
     confirm_close: bool,
     allow_close: bool,
     shared: Arc<Shared>,
@@ -361,6 +441,9 @@ impl App {
             repaint.request_repaint();
         });
         let mut app = Self {
+            review: None,
+            stage2_guard: None,
+            skip_stage2_guard: false,
             voice_prompt: cfg.settings.narrator_prompt.clone(),
             quick: QuickConfig::new(&cfg.settings),
             cfg,
@@ -369,7 +452,6 @@ impl App {
             projects: Vec::new(),
             segments: IndexMap::new(),
             settings_form: None,
-            cleanup_report: None,
             confirm_close: false,
             allow_close: false,
             shared: Arc::new(Shared::default()),
@@ -481,10 +563,17 @@ impl App {
             selected.join(", ")
         );
         let input = self.input_dir.clone();
+        let output = self.output_dir.clone();
         self.spawn(move |cfg, stop, shared| {
             let progress = |_: &str| shared.bump_progress(0.02, 0.95);
-            match pipeline::prepare_segments(&cfg, &input, &progress, Some(&stop), Some(&selected))
-            {
+            match pipeline::prepare_segments(
+                &cfg,
+                &input,
+                &output,
+                &progress,
+                Some(&stop),
+                Some(&selected),
+            ) {
                 Ok(segs) => {
                     shared.push(Event::Stage1Done(segs));
                     shared.push(Event::RefreshProjects);
@@ -513,9 +602,78 @@ impl App {
                 segs.len()
             );
         }
+        let names: Vec<String> = segs.keys().cloned().collect();
         for (name, s) in segs {
             self.segments.insert(name, s);
         }
+        if !self.stop.is_set() && self.review_enabled() {
+            let open = self.count_open(&names);
+            if open > 0 {
+                log::info!("{open} uncertain number spot(s) found — please review them.");
+                self.open_review(Some(names), false);
+            }
+        }
+    }
+
+    fn review_enabled(&self) -> bool {
+        self.cfg.settings.normalize_numbers && self.cfg.settings.review_numbers
+    }
+
+    /// Open review spots of the given projects.
+    fn count_open(&self, names: &[String]) -> usize {
+        names
+            .iter()
+            .filter_map(|n| self.segments.get(n).map(|s| (n, s)))
+            .map(|(n, s)| {
+                let store = ReviewStore::load(&self.cfg.paths.project_cache_dir(n));
+                review::pending(n, s, &self.cfg.settings, &store).len()
+            })
+            .sum()
+    }
+
+    /// Open the review window for `names` (default: selected projects).
+    fn open_review(&mut self, names: Option<Vec<String>>, then_generate: bool) {
+        if !self.review_enabled() {
+            log::warn!(
+                "Number review is off: enable 'Spell out numbers' and 'Review uncertain numbers' in Settings."
+            );
+            return;
+        }
+        let names = names.unwrap_or_else(|| {
+            let sel = self.selected_names();
+            self.segments
+                .keys()
+                .filter(|n| sel.is_empty() || sel.contains(n))
+                .cloned()
+                .collect()
+        });
+        if names.is_empty() {
+            log::warn!("No projects with segments to review; run Stage 1 first.");
+            return;
+        }
+        let mut stores = IndexMap::new();
+        let mut all = Vec::new();
+        for n in &names {
+            let Some(segs) = self.segments.get(n) else {
+                continue;
+            };
+            let store = ReviewStore::load(&self.cfg.paths.project_cache_dir(n));
+            all.extend(review::items(n, segs, &self.cfg.settings));
+            stores.insert(n.clone(), store);
+        }
+        let mut session = ReviewSession {
+            items: all,
+            pos: 0,
+            stores,
+            apply_same: false,
+            then_generate,
+            revisiting: false,
+        };
+        match (0..session.items.len()).find(|i| session.decided(*i).is_none()) {
+            Some(first) => session.pos = first,
+            None => session.revisiting = true,
+        }
+        self.review = Some(session);
     }
 
     fn selected_segments(&self) -> SegmentsByProject {
@@ -536,6 +694,14 @@ impl App {
         if to_process.is_empty() {
             log::warn!("No selected projects have cached segments to synthesize.");
             return;
+        }
+        if self.review_enabled() && !std::mem::take(&mut self.skip_stage2_guard) {
+            let names: Vec<String> = to_process.keys().cloned().collect();
+            let open = self.count_open(&names);
+            if open > 0 {
+                self.stage2_guard = Some(open);
+                return;
+            }
         }
         let skipped: Vec<&String> = self
             .segments
@@ -591,69 +757,6 @@ impl App {
                 Err(e) => log::error!("Stage 2 failed: {e:#}"),
             }
             shared.push(Event::Stage2Done);
-        });
-    }
-
-    fn start_cleanup(&mut self) {
-        let selected = self.selected_names();
-        if selected.is_empty() {
-            log::warn!("No stories selected. Tick at least one project to clean.");
-            return;
-        }
-        self.stop.clear();
-        self.reset_progress();
-        log::info!(
-            "Stage 3 (Cleanup): scanning {} project(s) for noisy chunks...",
-            selected.len()
-        );
-        let output = self.output_dir.clone();
-        self.spawn(move |cfg, _stop, shared| {
-            let progress = |_: &str| shared.bump_progress(0.05, 0.95);
-            let results = pipeline::cleanup_noisy_chunks(&cfg, &output, Some(&selected), &progress);
-            let edited: usize = results.values().map(|r| r.edited).sum();
-            let deleted: usize = results.values().map(|r| r.deleted.len()).sum();
-            if deleted > 0 {
-                log::info!(
-                    "Cleanup done: {edited} cleaned, {deleted} deleted. Re-run Stage 2 to re-synthesize the deleted chunks, then Stage 4 to assemble."
-                );
-            } else {
-                log::info!("Cleanup done: {edited} chunk(s) cleaned, none deleted.");
-            }
-            shared.set_progress(1.0);
-            shared.push(Event::CleanupDone(results));
-        });
-    }
-
-    fn start_assemble_final(&mut self) {
-        if self.segments.is_empty() {
-            log::warn!("No segments loaded; run Stage 1 first.");
-            return;
-        }
-        let to_process = self.selected_segments();
-        if to_process.is_empty() {
-            log::warn!("No selected projects have cached segments.");
-            return;
-        }
-        self.stop.clear();
-        self.reset_progress();
-        log::info!(
-            "Stage 4 (Assemble Final): assembling {} project(s)...",
-            to_process.len()
-        );
-        let output = self.output_dir.clone();
-        self.spawn(move |cfg, stop, shared| {
-            let progress = |_: &str| shared.bump_progress(0.05, 0.95);
-            match pipeline::assemble_final(&cfg, &to_process, &output, &progress, Some(&stop)) {
-                Ok(_) => {
-                    shared.set_progress(1.0);
-                    if stop.is_set() {
-                        log::info!("Assemble Final stopped by user.");
-                    } else {
-                        log::info!("Assemble Final completed successfully.");
-                    }
-                }
-                Err(e) => log::error!("Assemble Final failed: {e:#}"),
-            }
         });
     }
 
@@ -861,7 +964,6 @@ impl App {
             match e {
                 Event::Stage1Done(segs) => self.on_stage1_done(segs),
                 Event::Stage2Done => {}
-                Event::CleanupDone(r) => self.cleanup_report = Some(r),
                 Event::RefreshProjects => self.refresh_project_list(),
             }
         }
@@ -931,6 +1033,13 @@ impl App {
                     .clicked()
                 {
                     self.fix_languages();
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Review Numbers").fill(BLUE))
+                    .on_hover_text("Decide uncertain ordinals and Roman numerals")
+                    .clicked()
+                {
+                    self.open_review(None, false);
                 }
             });
         });
@@ -1022,7 +1131,7 @@ impl App {
     fn buttons_ui(&mut self, ui: &mut egui::Ui) {
         let busy = self.busy();
         egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.columns(4, |cols| {
+            ui.columns(2, |cols| {
                 let full = |ui: &mut egui::Ui, enabled: bool, b: egui::Button| {
                     ui.add_enabled(enabled, b.min_size(egui::vec2(ui.available_width(), 28.0)))
                         .clicked()
@@ -1034,26 +1143,17 @@ impl App {
                 ) {
                     self.start_stage1();
                 }
+                let generate = if self.cfg.settings.auto_cleanup {
+                    "2. Generate Audio (with cleanup)"
+                } else {
+                    "2. Generate Audio"
+                };
                 if full(
                     &mut cols[1],
                     !busy && !self.segments.is_empty(),
-                    egui::Button::new("2. Generate Audio"),
+                    egui::Button::new(generate).fill(GREEN),
                 ) {
                     self.start_stage2();
-                }
-                if full(
-                    &mut cols[2],
-                    !busy,
-                    egui::Button::new("3. Cleanup Noisy").fill(BLUE),
-                ) {
-                    self.start_cleanup();
-                }
-                if full(
-                    &mut cols[3],
-                    !busy,
-                    egui::Button::new("4. Assemble Final").fill(GREEN),
-                ) {
-                    self.start_assemble_final();
                 }
             });
         });
@@ -1212,59 +1312,191 @@ impl App {
         }
     }
 
-    fn cleanup_report_window(&mut self, ctx: &egui::Context) {
-        let Some(results) = &self.cleanup_report else {
+    fn review_window(&mut self, ctx: &egui::Context) {
+        let Some(session) = self.review.as_mut() else {
             return;
-        };
-        let edited: usize = results.values().map(|r| r.edited).sum();
-        let deleted: usize = results.values().map(|r| r.deleted.len()).sum();
-        let mut header = format!(
-            "Cleaned in place: {edited} chunk(s)\nDeleted (failed audit): {deleted} chunk(s)\n"
-        );
-        header.push_str(if deleted > 0 {
-            "Re-run Stage 2 to regenerate deleted chunks, then Stage 4 to assemble."
-        } else {
-            "All chunks passed discriminator + volume + voice-match checks."
-        });
-        let mut lines = Vec::new();
-        for (name, r) in results {
-            lines.push(format!(
-                "── {name} — cleaned {}, deleted {} ──",
-                r.edited,
-                r.deleted.len()
-            ));
-            if r.deleted.is_empty() {
-                lines.push("  (none deleted)".into());
-            }
-            for (file, reason) in &r.deleted {
-                lines.push(format!("  ✗ {file}    {reason}"));
-            }
-            lines.push(String::new());
-        }
-        let body = if lines.is_empty() {
-            "No projects scanned.".to_string()
-        } else {
-            lines.join("\n")
         };
         let mut open = true;
         let mut close = false;
-        egui::Window::new("Cleanup Report")
+        let mut generate = false;
+        egui::Window::new("Review Numbers")
             .open(&mut open)
-            .default_size([680.0, 460.0])
+            .collapsible(false)
+            .default_size([620.0, 420.0])
             .show(ctx, |ui| {
-                ui.label(header);
-                egui::ScrollArea::both().max_height(340.0).show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut body.as_str())
-                            .font(egui::TextStyle::Monospace),
-                    );
+                let n = session.items.len();
+                if n == 0 {
+                    ui.label("No uncertain number spots in these projects.");
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                    return;
+                }
+                let open_count = session.open_count();
+                let pos = session.pos.min(n - 1);
+                let item = session.items[pos].clone();
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&item.project).strong());
+                    ui.label(format!("— spot {} of {n}", pos + 1));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(format!("{open_count} open")).color(
+                            if open_count > 0 {
+                                Color32::from_rgb(0xe0, 0xb0, 0x40)
+                            } else {
+                                Color32::from_rgb(0x60, 0xc0, 0x60)
+                            },
+                        ));
+                    });
                 });
-                if ui.button("Close").clicked() {
-                    close = true;
+                ui.separator();
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.label(RichText::new(&item.before).size(15.0));
+                        ui.label(
+                            RichText::new(&item.spot.original)
+                                .size(15.0)
+                                .strong()
+                                .color(Color32::BLACK)
+                                .background_color(Color32::from_rgb(0xe0, 0xb0, 0x40)),
+                        );
+                        ui.label(RichText::new(&item.after).size(15.0));
+                    });
+                });
+                let current = session.decided(pos).cloned();
+                if let Some(d) = &current {
+                    ui.label(
+                        RichText::new(format!(
+                            "Current choice: {}",
+                            d.replacement.as_deref().unwrap_or("program default")
+                        ))
+                        .color(Color32::GRAY),
+                    );
+                }
+                ui.add_space(6.0);
+                ui.label("How should it be read?");
+                let mut chosen: Option<Option<String>> = None;
+                egui::Grid::new("review_choices")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        for c in &item.spot.choices {
+                            let preview = format!("{}{}{}", item.before, c.replacement, item.after);
+                            let selected = current.as_ref().and_then(|d| d.replacement.as_ref())
+                                == Some(&c.replacement);
+                            let mut b = egui::Button::new(RichText::new(&c.replacement).size(15.0));
+                            if selected {
+                                b = b.fill(GREEN);
+                            }
+                            if ui.add(b).on_hover_text(preview).clicked() {
+                                chosen = Some(Some(c.replacement.clone()));
+                            }
+                            ui.label(RichText::new(&c.hint).color(Color32::GRAY));
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Program default")
+                        .on_hover_text("Let the rules decide (digits are read by the TTS)")
+                        .clicked()
+                    {
+                        chosen = Some(None);
+                    }
+                    if ui.button("◀ Back").clicked() && pos > 0 {
+                        session.pos = pos - 1;
+                    }
+                    if ui.button("Skip ▶").clicked() {
+                        session.pos = (pos + 1) % n;
+                    }
+                    ui.checkbox(&mut session.apply_same, "Apply to all identical spots");
+                });
+                if let Some(rep) = chosen {
+                    session.pos = pos;
+                    session.decide(rep);
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if session.open_count() == 0 {
+                        ui.label(
+                            RichText::new("All spots decided.")
+                                .color(Color32::from_rgb(0x60, 0xc0, 0x60)),
+                        );
+                        if session.then_generate
+                            && ui
+                                .add(egui::Button::new("2. Generate Audio").fill(GREEN))
+                                .clicked()
+                        {
+                            generate = true;
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if close || !open || generate {
+            // Update spoken.txt with the decisions.
+            if let Some(session) = self.review.take() {
+                for name in session.stores.keys() {
+                    if let Some(segs) = self.segments.get(name)
+                        && let Err(e) =
+                            pipeline::write_texts(&self.cfg, name, segs, &self.output_dir)
+                    {
+                        log::warn!("[{name}] could not write the text files: {e:#}");
+                    }
+                }
+            }
+        }
+        if generate {
+            self.skip_stage2_guard = true;
+            self.start_stage2();
+        }
+    }
+
+    fn stage2_guard_dialog(&mut self, ctx: &egui::Context) {
+        let Some(open) = self.stage2_guard else {
+            return;
+        };
+        let mut action = None;
+        let modal = egui::Modal::new(egui::Id::unique("stage2_guard")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.label(format!(
+                "{open} uncertain number spot(s) have not been reviewed yet.\n\
+                 Without a decision the program default is used."
+            ));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new("Review now").fill(BLUE)).clicked() {
+                    action = Some("review");
+                }
+                if ui.button("Generate anyway").clicked() {
+                    action = Some("generate");
+                }
+                if ui.button("Cancel").clicked() {
+                    action = Some("cancel");
                 }
             });
-        if close || !open {
-            self.cleanup_report = None;
+        });
+        if modal.should_close() && action.is_none() {
+            action = Some("cancel");
+        }
+        match action {
+            Some("review") => {
+                self.stage2_guard = None;
+                let sel = self.selected_segments().keys().cloned().collect();
+                self.open_review(Some(sel), true);
+            }
+            Some("generate") => {
+                self.stage2_guard = None;
+                self.skip_stage2_guard = true;
+                self.start_stage2();
+            }
+            Some(_) => self.stage2_guard = None,
+            None => {}
         }
     }
 
@@ -1360,7 +1592,8 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| self.projects_ui(ui));
 
         self.settings_window(&ctx);
-        self.cleanup_report_window(&ctx);
+        self.review_window(&ctx);
+        self.stage2_guard_dialog(&ctx);
         self.close_handling(&ctx);
     }
 }

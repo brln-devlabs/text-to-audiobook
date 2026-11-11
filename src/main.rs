@@ -74,6 +74,8 @@ enum Command {
     FixLanguages,
     /// Regenerate the voice reference cache/voice_reference.wav
     VoiceRef,
+    /// Decide uncertain ordinals and Roman numerals interactively
+    Review,
     /// Show how NORMALIZE_NUMBERS rewrites German text (argument or stdin)
     Normalize {
         /// Text to normalize; reads standard input when omitted
@@ -91,6 +93,67 @@ fn cached(cfg: &Config, input: &std::path::Path, cli: &Cli) -> SegmentsByProject
         segs.retain(|name, _| sel.contains(name));
     }
     segs
+}
+
+/// Interactive number review in the terminal.
+fn review_cli(cfg: &Config, input: &std::path::Path, cli: &Cli) -> Result<()> {
+    use std::io::{BufRead, Write};
+    use text_to_audiobook::review::{ReviewStore, pending};
+    if !cfg.settings.normalize_numbers {
+        anyhow::bail!("set NORMALIZE_NUMBERS to true first (settings.json)");
+    }
+    let segs = cached(cfg, input, cli);
+    if segs.is_empty() {
+        anyhow::bail!("No segments to review; run `prepare` first.");
+    }
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines();
+    for (name, segments) in &segs {
+        let mut store = ReviewStore::load(&cfg.paths.project_cache_dir(name));
+        let items = pending(name, segments, &cfg.settings, &store);
+        if items.is_empty() {
+            println!("{name}: nothing to review.");
+            continue;
+        }
+        for (k, it) in items.iter().enumerate() {
+            if store.is_decided(it.segment, &it.spot) {
+                continue;
+            }
+            println!("\n── {name} — spot {} of {} ──", k + 1, items.len());
+            println!("{}[[{}]]{}", it.before, it.spot.original, it.after);
+            for (i, c) in it.spot.choices.iter().enumerate() {
+                println!("  {:>2}) {:<22} {}", i + 1, c.replacement, c.hint);
+            }
+            println!("   d) program default   s) skip   q) quit");
+            let choice = loop {
+                print!("> ");
+                std::io::stdout().flush()?;
+                let Some(line) = lines.next() else {
+                    return Ok(());
+                };
+                let line = line?;
+                match line.trim() {
+                    "q" => {
+                        store.save()?;
+                        return Ok(());
+                    }
+                    "s" => break None,
+                    "d" => break Some(None),
+                    n => match n.parse::<usize>() {
+                        Ok(i) if (1..=it.spot.choices.len()).contains(&i) => {
+                            break Some(Some(it.spot.choices[i - 1].replacement.clone()));
+                        }
+                        _ => println!("Please enter a number, d, s or q."),
+                    },
+                }
+            };
+            if let Some(rep) = choice {
+                store.set(it.segment, &it.spot, rep);
+                store.save()?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -139,7 +202,7 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Prepare => {
-            pipeline::prepare_segments(&cfg, &input, &no_progress, None, selected(&cli))?;
+            pipeline::prepare_segments(&cfg, &input, &output, &no_progress, None, selected(&cli))?;
         }
         Command::Generate => {
             let segs = cached(&cfg, &input, &cli);
@@ -173,8 +236,14 @@ fn run(cli: Cli) -> Result<()> {
             pipeline::assemble_final(&cfg, &segs, &output, &no_progress, None)?;
         }
         Command::Run => {
-            let segs =
-                pipeline::prepare_segments(&cfg, &input, &no_progress, None, selected(&cli))?;
+            let segs = pipeline::prepare_segments(
+                &cfg,
+                &input,
+                &output,
+                &no_progress,
+                None,
+                selected(&cli),
+            )?;
             if !segs.is_empty() {
                 pipeline::generate_audio(&cfg, &segs, &output, &no_progress, None, None)?;
             }
@@ -189,6 +258,7 @@ fn run(cli: Cli) -> Result<()> {
             };
             pipeline::fix_languages(&cfg, &names)?;
         }
+        Command::Review => review_cli(&cfg, &input, &cli)?,
         Command::Normalize { text } => {
             let input = match text {
                 Some(t) => t.clone(),
