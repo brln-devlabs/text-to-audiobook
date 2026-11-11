@@ -105,6 +105,18 @@ fn choice(replacement: String, hint: &str) -> Choice {
     }
 }
 
+/// Key shared by all enumeration spots ("I.", "II.", "2." at the start of a
+/// sentence), so one choice can be applied to all of them.
+pub const ENUMERATION_KEY: &str = "enum";
+
+/// "Zweitens:" for an enumeration item or heading number.
+fn enumeration_choice(n: u64) -> Choice {
+    choice(
+        format!("{}:", capitalize(&ordinal(n, "ens"))),
+        "Aufzählung / Gliederung („Zweitens: …“)",
+    )
+}
+
 fn ordinal_choices(n: u64, next_upper: bool, prev_is_word: bool) -> Vec<Choice> {
     let forms = vec![
         choice(ordinal(n, "e"), "die/der/das …-e"),
@@ -214,11 +226,20 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
             continue;
         }
         let original = format!("{}.", num.as_str());
+        // "2. Die Arbeiter …" at the start of a sentence: enumeration.
+        let enumeration = raw_prev.is_none() && starts_upper(next);
+        let mut choices = ordinal_choices(n, starts_upper(next), raw_prev.is_some());
+        let key = if enumeration {
+            choices.insert(0, enumeration_choice(n));
+            ENUMERATION_KEY.to_string()
+        } else {
+            format!("o|{}|{original}|{next}", p1.unwrap_or_default())
+        };
         spots.push(Spot {
             start: num.start(),
             end: num.end() + 1,
-            key: format!("o|{}|{original}|{next}", p1.unwrap_or_default()),
-            choices: ordinal_choices(n, starts_upper(next), raw_prev.is_some()),
+            key,
+            choices,
             original,
             kind: SpotKind::Ordinal,
         });
@@ -249,9 +270,11 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
         }
         let after_name =
             raw_prev.is_some_and(|p| starts_upper(p) && !p.chars().all(char::is_uppercase));
+        // "II. Kapitalistische Revolution" at the start of a sentence: enumeration.
+        let enumeration = dot && raw_prev.is_none() && starts_upper(&next);
         // Single letters are usually initials ("Hans V. Müller") or the letter
-        // itself; only "Karl V. dankte ab" style is asked.
-        if word.len() == 1 && (!after_name || (dot && starts_upper(&next))) {
+        // itself; only "Karl V. dankte ab" style and enumerations are asked.
+        if word.len() == 1 && !enumeration && (!after_name || (dot && starts_upper(&next))) {
             continue;
         }
         // Word in capitals in front: a heading or an acronym.
@@ -262,8 +285,18 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
         spots.push(Spot {
             start: num.start(),
             end: num.end() + c[2].len(),
-            key: format!("r|{}|{original}|{next}", raw_prev.unwrap_or_default()),
-            choices: roman_choices(v, dot, after_name),
+            key: if enumeration {
+                ENUMERATION_KEY.to_string()
+            } else {
+                format!("r|{}|{original}|{next}", raw_prev.unwrap_or_default())
+            },
+            choices: {
+                let mut c = roman_choices(v, dot, after_name);
+                if enumeration {
+                    c.insert(0, enumeration_choice(v));
+                }
+                c
+            },
             original,
             kind: SpotKind::Roman,
         });
@@ -483,6 +516,21 @@ mod tests {
         let s = &find_spots("Heinrich IV. war König.")[0];
         assert_eq!(s.choices[0].replacement, "der Vierte");
         assert!(s.choices.iter().any(|c| c.replacement == "des Vierten"));
+    }
+
+    #[test]
+    fn enumerations_get_zweitens() {
+        let spots = find_spots("II. Kapitalistische Revolution: Umwandlung der Industrie.");
+        assert_eq!(spots.len(), 1);
+        assert_eq!(spots[0].choices[0].replacement, "Zweitens:");
+        assert_eq!(spots[0].key, ENUMERATION_KEY);
+        let spots = find_spots("I. Utopischer Sozialismus. Das war so. 3. Die Arbeiter kamen.");
+        assert_eq!(spots.len(), 2);
+        assert_eq!(spots[0].choices[0].replacement, "Erstens:");
+        assert_eq!(spots[1].choices[0].replacement, "Drittens:");
+        assert_eq!(spots[1].key, ENUMERATION_KEY);
+        // Initials in a sentence are still skipped.
+        assert!(find_spots("Er traf Hans V. Müller.").is_empty());
     }
 
     #[test]

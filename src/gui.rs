@@ -365,11 +365,27 @@ impl ReviewSession {
         } else {
             vec![self.pos]
         };
+        // Identical spots take the choice at the same position ("Erstens:" for
+        // "I.", "Zweitens:" for "II." ...), or the same text as fallback.
+        let choice_index = replacement.as_ref().and_then(|r| {
+            current
+                .spot
+                .choices
+                .iter()
+                .position(|c| &c.replacement == r)
+        });
         let mut touched: Vec<String> = Vec::new();
         for i in targets {
             let it = &self.items[i];
-            // Same key = same situation and choices: take the same reading.
-            let rep = replacement.clone();
+            let rep = match (choice_index, &replacement) {
+                (Some(idx), _) if i != self.pos => it
+                    .spot
+                    .choices
+                    .get(idx)
+                    .map(|c| c.replacement.clone())
+                    .or_else(|| replacement.clone()),
+                _ => replacement.clone(),
+            };
             if let Some(store) = self.stores.get_mut(&it.project) {
                 store.set(it.segment, &it.spot, rep);
                 if !touched.contains(&it.project) {
