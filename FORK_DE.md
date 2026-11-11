@@ -37,7 +37,22 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   bei deutschen Abschnitten. Ausprobieren ohne Hörbuch:
   `text-to-audiobook normalize "Am 3. Mai 1995 um 14:30 Uhr kostete es 5,50 €."`
   Ordnungszahlen werden nur mit eindeutigem Wort davor umgewandelt („am 3.“, „der 3.“,
-  „in der 3.“); sonst bleibt die Zahl stehen. Römische Zahlen bleiben unverändert.
+  „in der 3.“). Römische Zahlen nach Wörtern wie Kapitel, Teil, Band oder Akt werden zur
+  Grundzahl („Kapitel IV“ → „Kapitel vier“), vor „Jahrhundert“ mit eindeutigem Wort davor
+  zur Ordnungszahl („im XIX. Jahrhundert“ → „im neunzehnten Jahrhundert“).
+- **Unsichere Zahlen prüfen** (`REVIEW_NUMBERS = true`, zusätzlich zu `NORMALIZE_NUMBERS`):
+  Stellen, die die Regeln nicht sicher entscheiden können, also Ordnungszahlen ohne
+  eindeutiges Wort davor („Sie kam als 3. ins Ziel“, „Er wurde 3.“) und römische Zahlen
+  außerhalb der sicheren Muster („Heinrich IV.“, „Ludwig XIV“), werden gesammelt. Nach
+  „1. Prepare Segments“ öffnet sich das Fenster „Review Numbers“ und zeigt jede Stelle im
+  Satz mit Vorschlägen („dritte“, „dritten“, „Dritter“, „drei.“, „der Vierte“, „des
+  Vierten“ …). Ein Klick übernimmt den Vorschlag und springt zur nächsten Stelle; mit
+  „Apply to all identical spots“ gilt die Wahl für alle gleichen Stellen. „Program default“
+  überlässt die Stelle den Regeln, „Skip“ lässt sie offen. Das Fenster lässt sich jederzeit
+  über „Review Numbers“ neben der Projektliste öffnen; vor „2. Generate Audio“ fragt das
+  Programm nach, wenn noch Stellen offen sind. Ohne Oberfläche: `text-to-audiobook review`.
+  Die Entscheidungen liegen in `cache/<Textname>/review.json`; „Clear Cache“ löscht sie mit.
+  Sie gelten für neu erzeugte Audiostücke.
 - **Neutrale Erzählstimme** im `NARRATOR_PROMPT` und deutscher Text für die automatisch
   erzeugte Referenzstimme.
 
@@ -135,6 +150,7 @@ Projektordner, zum Beispiel:
   "TTS_MODEL_NAME": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
   "TTS_DTYPE": "bfloat16",
   "NORMALIZE_NUMBERS": true,
+  "REVIEW_NUMBERS": true,
   "USE_LLM": false,
   "SILENCE_AFTER_PARAGRAPH_MS": 1200,
   "SILENCE_AFTER_PERIOD_MS": 500

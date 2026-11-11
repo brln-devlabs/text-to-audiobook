@@ -117,6 +117,9 @@ pub struct Settings {
     /// Spell out numbers, dates, times, units and common abbreviations
     /// before synthesis (German texts only).
     pub normalize_numbers: bool,
+    /// Guided review of the spots the number rules cannot decide (ordinals
+    /// without clear context, Roman numerals); needs `NORMALIZE_NUMBERS`.
+    pub review_numbers: bool,
     /// Runtime only (not stored): run without models; the LLM answers with
     /// neutral defaults and the TTS writes silence. For tests and dry runs.
     #[serde(skip)]
@@ -147,6 +150,7 @@ impl Default for Settings {
             tts_model_name: "Qwen/Qwen3-TTS-12Hz-0.6B-Base".into(),
             use_llm: false,
             normalize_numbers: false,
+            review_numbers: false,
             mock_models: false,
         }
     }
@@ -175,6 +179,7 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "TTS_MODEL_NAME",
     "USE_LLM",
     "NORMALIZE_NUMBERS",
+    "REVIEW_NUMBERS",
 ];
 
 fn value_to_i64(v: &Value) -> Option<i64> {
@@ -275,6 +280,7 @@ impl Settings {
             "TTS_MODEL_NAME" => set(&mut self.tts_model_name, value_to_string(v)),
             "USE_LLM" => set(&mut self.use_llm, value_to_bool(v)),
             "NORMALIZE_NUMBERS" => set(&mut self.normalize_numbers, value_to_bool(v)),
+            "REVIEW_NUMBERS" => set(&mut self.review_numbers, value_to_bool(v)),
             _ => false,
         }
     }

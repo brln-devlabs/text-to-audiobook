@@ -34,6 +34,7 @@ pub mod natsort;
 pub mod normalize_de;
 pub mod pipeline;
 pub mod pyval;
+pub mod review;
 pub mod segment;
 pub mod storage;
 pub mod tts;

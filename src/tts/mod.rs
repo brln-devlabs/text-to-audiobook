@@ -145,6 +145,8 @@ pub struct TtsEngine {
     voice_ref_path: Option<PathBuf>,
     settings: Settings,
     paths: Paths,
+    /// Decisions from the number review of the current project.
+    review: Option<crate::review::ReviewStore>,
 }
 
 impl TtsEngine {
@@ -156,6 +158,7 @@ impl TtsEngine {
             voice_ref_path: None,
             settings: settings.clone(),
             paths: paths.clone(),
+            review: None,
         }
     }
 
@@ -535,6 +538,23 @@ impl TtsEngine {
         out
     }
 
+    /// Use the review decisions of the project about to be synthesized.
+    pub fn set_review(&mut self, store: Option<crate::review::ReviewStore>) {
+        self.review = store;
+    }
+
+    /// [`Self::prepare_text`] for segment `index`, after applying its review
+    /// decisions.
+    pub fn prepare_segment_text(&self, index: usize, text: &str, language: &str) -> String {
+        let reviewed = match &self.review {
+            Some(store) if self.settings.normalize_numbers && language == "german" => {
+                store.apply(index, text)
+            }
+            _ => text.to_string(),
+        };
+        self.prepare_text(&reviewed, language)
+    }
+
     /// Existing WAVs of chunk `i`: `chunk_NNN.wav`, or `_0`, `_1`, ...
     pub fn existing_parts(output_dir: &Path, i: usize) -> Vec<PathBuf> {
         let base = output_dir.join(format!("chunk_{i:06}.wav"));
@@ -600,7 +620,7 @@ impl TtsEngine {
             } else {
                 self.anchor_path.clone()
             };
-            let text = self.prepare_text(&seg.normalized_text, &language);
+            let text = self.prepare_segment_text(i, &seg.normalized_text, &language);
             let result = self.synthesize(&text, ref_audio.as_deref(), &out_path, &language, stop);
             let paths = match result {
                 Ok(p) => p,
@@ -939,6 +959,33 @@ pub mod tests {
         assert_eq!(engine.prepare_text("Seit 1995.", "english"), "Seit 1995.");
         let (_dir, _fake, off) = setup(&Settings::default());
         assert_eq!(off.prepare_text("Seit 1995.", "german"), "Seit 1995.");
+    }
+
+    #[test]
+    fn review_decisions_are_applied_before_normalization() {
+        let s = Settings {
+            normalize_numbers: true,
+            ..Settings::default()
+        };
+        let (dir, fake, mut engine) = setup(&s);
+        let text = "Heinrich IV. war 3. im Rennen.";
+        let mut store = crate::review::ReviewStore::load(&dir.path().join("rev"));
+        for spot in crate::review::find_spots(text) {
+            let rep = if spot.original == "IV." {
+                "der Vierte"
+            } else {
+                "Dritter"
+            };
+            store.set(0, &spot, Some(rep.into()));
+        }
+        engine.set_review(Some(store));
+        engine
+            .process_all(&segs(&[(text, None)]), &dir.path().join("out"), None, None)
+            .unwrap();
+        assert_eq!(
+            fake.clone_calls.lock().unwrap()[0].0,
+            "Heinrich der Vierte war Dritter im Rennen."
+        );
     }
 
     #[test]

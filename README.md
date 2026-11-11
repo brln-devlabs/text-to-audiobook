@@ -9,7 +9,8 @@ An open-source text-to-speech application that turns Markdown texts into audiobo
 ## ✨ Features
 
 - 🎤 **Qwen3-TTS voice cloning** on [Candle](https://github.com/huggingface/candle) (CPU, CUDA or Metal), consistent narrator via voice anchoring
-- 🔢 **Number normalization** for German (optional): numbers, years, dates, ordinals, times, money, units and abbreviations are spelled out before synthesis
+- 🔢 **Number normalization** for German (optional): numbers, years, dates, ordinals, times, money, units, Roman numerals after "Kapitel"/"Teil"/… and abbreviations are spelled out before synthesis
+- ✅ **Guided number review** (optional): spots the rules cannot decide (ordinals without clear context, Roman numerals like "Heinrich IV.") are listed with suggested readings to click through
 - 🧠 **Optional LLM** (Llama 3.2 1B through [llama.cpp](https://github.com/ggml-org/llama.cpp)): emotion spans, language, chapter and story titles, reading order of chapter files. Without it, titles come from headings and the reading order from file names
 - 🎨 **Desktop GUI** (egui) with project list, progress/ETA and live log, plus a **CLI** for headless use and Docker
 - ⚡ **Audio pipeline**: Butterworth clean-up filters, crossfades, sentence/paragraph pauses, WAV + MP3 export (LAME built in, no ffmpeg needed)
@@ -130,6 +131,7 @@ text-to-audiobook projects                 # list projects and cache state
 text-to-audiobook fix-languages            # re-check language outliers
 text-to-audiobook voice-ref                # regenerate the voice reference
 text-to-audiobook normalize "Am 3. Mai 1995 um 14:30 Uhr"   # preview NORMALIZE_NUMBERS
+text-to-audiobook review                   # decide uncertain number spots (REVIEW_NUMBERS)
 text-to-audiobook --mock-models run        # dry run without models (silence)
 ```
 
@@ -178,6 +180,7 @@ Edit `settings.json` in the project root or use the settings window. Keys and de
 | `SILENCE_AFTER_PERIOD_MS` | 500 | pause after a segment |
 | `SILENCE_AFTER_PARAGRAPH_MS` | 1200 | pause after a paragraph |
 | `NORMALIZE_NUMBERS` | false | spell out numbers, dates, times, units, abbreviations (German segments) |
+| `REVIEW_NUMBERS` | false | guided review of spots the rules cannot decide (ordinals without clear context, Roman numerals); needs `NORMALIZE_NUMBERS` |
 | `USE_LLM` | false | use Llama in stage 1 (emotion spans, titles, file order, `auto` language); needs the `llm` feature |
 | `LLM_GPU_LAYERS` | 0 | Llama layers on the GPU (0 = CPU, -1 = all) |
 | `LLM_MAX_RETRIES` | 3 | attempts per LLM call |
@@ -222,7 +225,7 @@ With `USE_LLM = true`, **Llama-3.2-1B-Instruct** (4-bit GGUF) additionally order
 
 ### Stage 2: Audio generation
 1. Load **Qwen3-TTS** (0.6B or 1.7B Base); create `cache/voice_reference.wav` if missing
-2. With `NORMALIZE_NUMBERS`, German text gets numbers, dates and abbreviations spelled out
+2. With `NORMALIZE_NUMBERS`, German text gets numbers, dates and abbreviations spelled out; decisions from the number review (`cache/<project>/review.json`) are applied first
 3. Chunk 0 clones the voice reference → becomes the **anchor**
 4. Every later chunk clones the anchor (x-vector voice cloning), same seed each time
 5. Denoise each chunk (high-pass 60 Hz, low-pass 9 kHz)

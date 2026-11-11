@@ -43,7 +43,7 @@ const TEENS: [&str; 10] = [
 const TENS: [&str; 10] = [
     "", "", "zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig",
 ];
-const MONTHS: [&str; 12] = [
+pub(crate) const MONTHS: [&str; 12] = [
     "Januar",
     "Februar",
     "März",
@@ -243,8 +243,18 @@ fn money(token: &str, currency: &str) -> String {
 
 static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\p{L}]+").unwrap());
 
+/// The word directly before byte offset `idx` as written (None after
+/// sentence punctuation).
+pub(crate) fn prev_word_raw(text: &str, idx: usize) -> Option<&str> {
+    let before = &text[..idx];
+    if before.trim_end().ends_with(['.', '!', '?', ':', ';']) {
+        return None;
+    }
+    WORD.find_iter(before).last().map(|m| m.as_str())
+}
+
 /// The last two words before byte offset `idx`, lower case (last first).
-fn prev_words(text: &str, idx: usize) -> (Option<String>, Option<String>) {
+pub(crate) fn prev_words(text: &str, idx: usize) -> (Option<String>, Option<String>) {
     let before = &text[..idx];
     let words: Vec<&str> = WORD.find_iter(before).map(|m| m.as_str()).collect();
     // Only words directly in front (no sentence punctuation in between).
@@ -283,7 +293,7 @@ const PREPOSITIONS: &[&str] = &[
 ];
 
 /// Ending of an ordinal from the words in front, or None if unclear.
-fn ordinal_ending(prev: Option<&str>, prev2: Option<&str>) -> Option<&'static str> {
+pub(crate) fn ordinal_ending(prev: Option<&str>, prev2: Option<&str>) -> Option<&'static str> {
     let prev = prev?;
     match prev {
         "am" | "im" | "vom" | "zum" | "beim" | "zur" | "dem" | "den" | "des" | "einem"
@@ -296,6 +306,87 @@ fn ordinal_ending(prev: Option<&str>, prev2: Option<&str>) -> Option<&'static st
         _ => None,
     }
 }
+
+/// Roman numeral for 1..=3999 ("XIV").
+fn to_roman(mut n: u64) -> String {
+    const TABLE: [(u64, &str); 13] = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+    let mut out = String::new();
+    for (value, sym) in TABLE {
+        while n >= value {
+            out.push_str(sym);
+            n -= value;
+        }
+    }
+    out
+}
+
+/// Value of a Roman numeral in canonical form ("XIV" -> 14); None for
+/// anything else ("IIII", "VX", "ABC").
+pub fn roman_value(s: &str) -> Option<u64> {
+    if s.is_empty() || s.len() > 15 {
+        return None;
+    }
+    let val = |c: char| match c {
+        'I' => Some(1i64),
+        'V' => Some(5),
+        'X' => Some(10),
+        'L' => Some(50),
+        'C' => Some(100),
+        'D' => Some(500),
+        'M' => Some(1000),
+        _ => None,
+    };
+    let vals: Vec<i64> = s.chars().map(val).collect::<Option<_>>()?;
+    let mut total = 0i64;
+    for (i, v) in vals.iter().enumerate() {
+        if vals.get(i + 1).is_some_and(|next| next > v) {
+            total -= v;
+        } else {
+            total += v;
+        }
+    }
+    let total = u64::try_from(total)
+        .ok()
+        .filter(|t| (1..=3999).contains(t))?;
+    (to_roman(total) == s).then_some(total)
+}
+
+/// Words after which a Roman numeral is a plain number ("Kapitel IV").
+pub(crate) const ROMAN_KEYWORDS: &[&str] = &[
+    "Kapitel",
+    "Teil",
+    "Band",
+    "Buch",
+    "Akt",
+    "Szene",
+    "Abschnitt",
+    "Anhang",
+    "Folge",
+    "Staffel",
+    "Klasse",
+    "Stufe",
+    "Phase",
+    "Artikel",
+    "Tafel",
+    "Abbildung",
+    "Paragraph",
+    "Tabelle",
+    "Bd",
+];
 
 /// Replace every match; `f` gets the captures and the byte offset of the
 /// match and returns None to keep the original text.
@@ -359,6 +450,14 @@ static SENTENCE_ABBREVIATIONS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::
 });
 
 static PAGE: LazyLock<Regex> = LazyLock::new(|| re(r"\bS\.\s?(\d)"));
+static ROMAN_AFTER_KEYWORD: LazyLock<Regex> = LazyLock::new(|| {
+    re(&format!(
+        r"\b({})(\.?\s+)([IVXLC]+)\b",
+        ROMAN_KEYWORDS.join("|")
+    ))
+});
+static ROMAN_CENTURY: LazyLock<Regex> =
+    LazyLock::new(|| re(r"\b([IVXLC]+)\.(\s+)(Jahrhundert\p{L}*|Jh\.)"));
 static NUMERIC_DATE: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b"));
 static DAY_MONTH: LazyLock<Regex> = LazyLock::new(|| {
     re(
@@ -398,6 +497,23 @@ pub fn normalize(text: &str) -> String {
         s = r.replace_all(&s, *word).into_owned();
     }
     s = PAGE.replace_all(&s, "Seite $1").into_owned();
+
+    // Kapitel IV -> Kapitel vier
+    s = ROMAN_AFTER_KEYWORD
+        .replace_all(&s, |c: &Captures| match roman_value(&c[3]) {
+            Some(v) => format!("{}{}{}", &c[1], &c[2], cardinal(v)),
+            None => c[0].to_string(),
+        })
+        .into_owned();
+
+    // im XIX. Jahrhundert -> im neunzehnten Jahrhundert (with clear context)
+    let t = s.clone();
+    s = replace_ctx(&ROMAN_CENTURY, &t, |c, at| {
+        let v = roman_value(&c[1])?;
+        let (p1, p2) = prev_words(&t, at);
+        let ending = ordinal_ending(p1.as_deref(), p2.as_deref())?;
+        Some(format!("{}{}{}", ordinal(v, ending), &c[2], &c[3]))
+    });
 
     // 03.05.1995 -> dritter Mai neunzehnhundertfünfundneunzig
     let t = s.clone();
@@ -644,6 +760,24 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(normalize(input), expected, "input: {input}");
         }
+    }
+
+    #[test]
+    fn roman_numerals() {
+        assert_eq!(roman_value("XIV"), Some(14));
+        assert_eq!(roman_value("MCMXCV"), Some(1995));
+        assert_eq!(roman_value("IIII"), None);
+        assert_eq!(roman_value("VX"), None);
+        assert_eq!(roman_value("Hallo"), None);
+        assert_eq!(normalize("Kapitel IV beginnt."), "Kapitel vier beginnt.");
+        assert_eq!(normalize("Im Teil II."), "Im Teil zwei.");
+        assert_eq!(
+            normalize("Im XIX. Jahrhundert war es so."),
+            "Im neunzehnten Jahrhundert war es so."
+        );
+        // Without clear context the numeral stays (see review).
+        assert_eq!(normalize("Heinrich IV. kam."), "Heinrich IV. kam.");
+        assert_eq!(normalize("Kapitel CD"), "Kapitel CD");
     }
 
     #[test]

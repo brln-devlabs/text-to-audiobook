@@ -632,7 +632,19 @@ pub fn generate_audio_for_project(
     };
 
     let result = (|| -> Result<Option<PathBuf>> {
-        let wav_paths = tts.process_all(segments, &project_out.join("chunks"), stop, chunk_done)?;
+        let store = crate::review::ReviewStore::load(&cfg.paths.project_cache_dir(project_name));
+        if cfg.settings.review_numbers && cfg.settings.normalize_numbers {
+            let open = crate::review::pending(project_name, segments, &cfg.settings, &store).len();
+            if open > 0 {
+                log::warn!(
+                    "[{project_name}] {open} number spot(s) not reviewed yet; the program defaults are used"
+                );
+            }
+        }
+        tts.set_review(Some(store));
+        let wav_paths = tts.process_all(segments, &project_out.join("chunks"), stop, chunk_done);
+        tts.set_review(None);
+        let wav_paths = wav_paths?;
         if stopped(stop) {
             emit(
                 progress,
