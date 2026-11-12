@@ -379,10 +379,13 @@ impl ReviewSession {
                 .iter()
                 .position(|c| &c.replacement == r)
         });
+        // "Keep as written" means each spot's own text.
+        let keep = replacement.as_deref() == Some(current.spot.original.as_str());
         let mut touched: Vec<String> = Vec::new();
         for i in targets {
             let it = &self.items[i];
             let rep = match (choice_index, &replacement) {
+                _ if keep => Some(it.spot.original.clone()),
                 (Some(idx), _) if i != self.pos => it
                     .spot
                     .choices
@@ -1459,7 +1462,13 @@ impl App {
                     ui.label(
                         RichText::new(format!(
                             "Current choice: {}",
-                            d.replacement.as_deref().unwrap_or("program default")
+                            match d.replacement.as_deref() {
+                                None => "program default".to_string(),
+                                Some(r) if r == item.spot.original => {
+                                    format!("{r} (keep as written)")
+                                }
+                                Some(r) => r.to_string(),
+                            }
                         ))
                         .color(Color32::GRAY),
                     );

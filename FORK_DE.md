@@ -62,8 +62,10 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   „1. Prepare Segments“ öffnet sich das Fenster „Review Numbers“ und zeigt jede Stelle im
   Satz mit Vorschlägen („dritte“, „dritten“, „Dritter“, „drei.“, „der Vierte“, „des
   Vierten“ …). Ein Klick übernimmt den Vorschlag und springt zur nächsten Stelle; mit
-  „Apply to all identical spots“ gilt die Wahl für alle gleichen Stellen. „Program default“
-  überlässt die Stelle den Regeln, „Skip“ lässt sie offen. Bei Gliederungspunkten am
+  „Apply to all identical spots“ gilt die Wahl für alle gleichen Stellen. Die letzte Auswahl
+  („keep as written“) lässt die Stelle genau so, wie sie im Text steht; auch die Regeln
+  ändern sie dann nicht. „Program default“ überlässt die Stelle den Regeln, „Skip“ lässt sie
+  offen. Bei Gliederungspunkten am
   Satzanfang („II. Kapitalistische Revolution“) steht „Zweitens:“ zuerst. Ist der Satz allein
   nicht eindeutig, klappt „▼ More context“ je drei Abschnitte davor und danach auf; bei der
   nächsten Stelle ist die Ansicht wieder zu (Kommandozeile: `m`). Das Fenster lässt sich jederzeit

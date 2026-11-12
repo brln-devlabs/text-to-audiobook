@@ -161,7 +161,7 @@ pub fn spoken_text(
         Some(store) => store.apply(index, text),
         None => text.to_string(),
     };
-    let out = crate::normalize_de::normalize(&reviewed);
+    let out = crate::normalize_de::unprotect(&crate::normalize_de::normalize(&reviewed));
     if out != text {
         log::debug!("Normalized: {out}");
     }

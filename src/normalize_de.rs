@@ -619,6 +619,32 @@ static DECADE: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\d+)er\b"));
 static NUMBER: LazyLock<Regex> =
     LazyLock::new(|| re(r"\b(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+\.\d+|\d+,\d+|\d+)\b"));
 
+/// Characters of protected text live in a private-use plane, where no rule
+/// matches them; `unprotect` brings them back after `normalize`.
+const PROTECT_OFFSET: u32 = 0xF0000;
+
+/// Hide `text` from `normalize` (review choice "keep as written").
+pub fn protect(text: &str) -> String {
+    text.chars()
+        .map(|c| match char::from_u32(PROTECT_OFFSET + c as u32) {
+            Some(p) if (c as u32) < 0xFFFE => p,
+            _ => c,
+        })
+        .collect()
+}
+
+/// Undo `protect`.
+pub fn unprotect(text: &str) -> String {
+    text.chars()
+        .map(|c| match c as u32 {
+            v if (PROTECT_OFFSET..PROTECT_OFFSET + 0xFFFE).contains(&v) => {
+                char::from_u32(v - PROTECT_OFFSET).unwrap_or(c)
+            }
+            _ => c,
+        })
+        .collect()
+}
+
 /// Spell out numbers, dates, times, units and abbreviations in German text.
 pub fn normalize(text: &str) -> String {
     // 10² -> 10 hoch 2
