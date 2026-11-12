@@ -359,6 +359,10 @@ pub struct Decision {
     pub start: usize,
     pub original: String,
     pub replacement: Option<String>,
+    /// The excerpt around the spot when it was decided: lets the decision
+    /// follow its spot when the segment numbers shift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
 }
 
 /// Decisions of one project (`cache/<project>/review.json`).
@@ -405,7 +409,63 @@ impl ReviewStore {
             start: spot.start,
             original: spot.original.clone(),
             replacement,
+            context: None,
         });
+    }
+
+    /// Decide `it` and remember its excerpt (see [`Decision::context`]).
+    pub fn decide(&mut self, it: &Item, replacement: Option<String>) {
+        self.set(it.segment, &it.spot, replacement);
+        if let Some(d) = self.decisions.last_mut() {
+            d.context = Some(it.context());
+        }
+    }
+
+    /// Match the decisions to the current spots: a decision whose spot moved
+    /// (other segment number, other offset) follows it by its excerpt; old
+    /// decisions without excerpt that match no spot any more are dropped.
+    /// Returns true if anything changed.
+    pub fn sync(&mut self, items: &[Item]) -> bool {
+        let at = |d: &Decision, it: &Item| {
+            d.segment == it.segment && d.start == it.spot.start && d.original == it.spot.original
+        };
+        let mut changed = false;
+        let mut taken: Vec<bool> = items
+            .iter()
+            .map(|it| self.decisions.iter().any(|d| at(d, it)))
+            .collect();
+        let mut keep = Vec::with_capacity(self.decisions.len());
+        for mut d in std::mem::take(&mut self.decisions) {
+            if let Some(it) = items.iter().find(|it| at(&d, it)) {
+                // Older decisions get their excerpt now, so they can follow
+                // their spot from here on.
+                if d.context.is_none() {
+                    d.context = Some(it.context());
+                    changed = true;
+                }
+                keep.push(d);
+                continue;
+            }
+            let target = d.context.as_ref().and_then(|ctx| {
+                items.iter().enumerate().position(|(i, it)| {
+                    !taken[i] && it.spot.original == d.original && &it.context() == ctx
+                })
+            });
+            match (target, &d.context) {
+                (Some(i), _) => {
+                    d.segment = items[i].segment;
+                    d.start = items[i].spot.start;
+                    taken[i] = true;
+                    changed = true;
+                    keep.push(d);
+                }
+                // The text may come back: keep it, but it is not applied.
+                (None, Some(_)) => keep.push(d),
+                (None, None) => changed = true,
+            }
+        }
+        self.decisions = keep;
+        changed
     }
 
     pub fn unset(&mut self, segment: usize, spot: &Spot) {
@@ -414,14 +474,25 @@ impl ReviewStore {
         });
     }
 
-    /// Apply the decisions of `segment` to its text (spots whose text has
-    /// changed since are ignored).
+    /// Apply the decisions of `segment` to its text. Only decisions on a
+    /// spot that is in the text now count, so a decision left behind by a
+    /// changed text can never hit an unrelated word.
     pub fn apply(&self, segment: usize, text: &str) -> String {
+        let spots = find_spots(text);
+        self.apply_where(segment, text, |d| {
+            spots
+                .iter()
+                .any(|s| s.start == d.start && s.original == d.original)
+        })
+    }
+
+    fn apply_where(&self, segment: usize, text: &str, ok: impl Fn(&Decision) -> bool) -> String {
         let mut ds: Vec<&Decision> = self
             .decisions
             .iter()
             .filter(|d| d.segment == segment && d.replacement.is_some())
             .filter(|d| text.get(d.start..d.start + d.original.len()) == Some(d.original.as_str()))
+            .filter(|d| ok(d))
             .collect();
         ds.sort_by_key(|d| std::cmp::Reverse(d.start));
         let mut out = text.to_string();
@@ -455,6 +526,31 @@ pub struct Item {
     /// Up to ~80 characters before and after the spot.
     pub before: String,
     pub after: String,
+}
+
+impl Item {
+    /// The excerpt as shown: before, spot, after.
+    pub fn context(&self) -> String {
+        format!("{}{}{}", self.before, self.spot.original, self.after)
+    }
+}
+
+/// Load the decisions of a project and match them to its current spots
+/// ([`ReviewStore::sync`]); saved again if anything moved.
+pub fn load_synced(
+    cache_dir: &Path,
+    project: &str,
+    segments: &[Segment],
+    settings: &Settings,
+) -> ReviewStore {
+    let mut store = ReviewStore::load(cache_dir);
+    if !store.decisions.is_empty()
+        && store.sync(&items(project, segments, settings))
+        && let Err(e) = store.save()
+    {
+        log::warn!("Could not save review decisions: {e:#}");
+    }
+    store
 }
 
 fn context(text: &str, start: usize, end: usize) -> (String, String) {
@@ -548,34 +644,84 @@ pub fn pending(
 /// File with all review decisions in context (`output/<project>/text/`).
 pub const REPORT_FILE: &str = "review.txt";
 
+/// Up to `n` words before `from` / after `to`: byte offsets.
+fn widen(text: &str, from: usize, to: usize, n: usize) -> (usize, usize) {
+    let mut start = from;
+    for _ in 0..n {
+        let head = text[..start].trim_end();
+        match head.rfind(char::is_whitespace) {
+            Some(i) => start = i + 1,
+            None => {
+                start = 0;
+                break;
+            }
+        }
+    }
+    let mut end = to;
+    for _ in 0..n {
+        let tail = &text[end..];
+        let skip = tail.len() - tail.trim_start().len();
+        match tail[skip..].find(char::is_whitespace) {
+            Some(i) => end += skip + i,
+            None => {
+                end = text.len();
+                break;
+            }
+        }
+    }
+    (start, end)
+}
+
 /// The excerpt shown for `it` as it is spoken: every decision of the
-/// segment that lies inside the excerpt applied, then the number rules.
+/// segment that lies inside it applied, then the number rules. Two words
+/// more on each side are read along ("im 18." needs its "Jahrhundert") and
+/// cut off again when the rules left them unchanged.
 fn spoken_excerpt(text: &str, it: &Item, store: &ReviewStore) -> String {
     const DOTS: &str = "…";
-    let lead = it.before.strip_prefix(DOTS);
-    let trail = it.after.strip_suffix(DOTS);
-    let from = it.spot.start - lead.unwrap_or(&it.before).len();
-    let to = it.spot.end + trail.unwrap_or(&it.after).len();
+    let before = it.before.strip_prefix(DOTS).unwrap_or(&it.before);
+    let after = it.after.strip_suffix(DOTS).unwrap_or(&it.after);
+    let from = it.spot.start - before.len();
+    let to = it.spot.end + after.len();
+    let (wfrom, wto) = widen(text, from, to, 2);
     let local = ReviewStore {
         decisions: store
             .decisions
             .iter()
             .filter(|d| {
-                d.segment == it.segment && d.start >= from && d.start + d.original.len() <= to
+                d.segment == it.segment && d.start >= wfrom && d.start + d.original.len() <= wto
             })
             .map(|d| Decision {
-                start: d.start - from,
+                start: d.start - wfrom,
                 ..d.clone()
             })
             .collect(),
         path: PathBuf::new(),
     };
-    let applied = local.apply(it.segment, &text[from..to]);
-    let spoken = crate::normalize_de::unprotect(&crate::normalize_de::normalize(&applied));
+    let applied = local.apply_where(it.segment, &text[wfrom..wto], |_| true);
+    let mut spoken = crate::normalize_de::unprotect(&crate::normalize_de::normalize(&applied));
+    let (pre, post) = (&text[wfrom..from], &text[to..wto]);
+    let mut cut_pre = false;
+    let mut cut_post = false;
+    if !pre.chars().any(|c| c.is_ascii_digit())
+        && let Some(rest) = spoken.strip_prefix(pre)
+    {
+        spoken = rest.to_string();
+        cut_pre = true;
+    }
+    if !post.chars().any(|c| c.is_ascii_digit())
+        && let Some(rest) = spoken.strip_suffix(post)
+    {
+        spoken = rest.to_string();
+        cut_post = true;
+    }
+    // "…" where the shown text does not reach the segment's start or end.
+    let shown_from = if cut_pre { from } else { wfrom };
+    let shown_to = if cut_post { to } else { wto };
     format!(
-        "{}{spoken}{}",
-        if lead.is_some() { DOTS } else { "" },
-        if trail.is_some() { DOTS } else { "" }
+        "{}{}{}",
+        if shown_from > 0 { DOTS } else { "" },
+        spoken.trim(),
+        if shown_to < text.len() { DOTS } else { "" }
     )
 }
 
@@ -627,7 +773,7 @@ pub fn report(
         .collect();
     if !stale.is_empty() {
         out.push_str(&format!(
-            "\n## {} Entscheidung(en) ohne passende Stelle (Text geändert)\n\n",
+            "\n## {} Entscheidung(en) ohne passende Stelle (Text geändert, werden nicht angewendet)\n\n",
             stale.len()
         ));
         for d in stale {
@@ -824,6 +970,7 @@ mod tests {
             start: 0,
             original: "IV.".into(),
             replacement: None,
+            context: Some("… Heinrich IV. …".into()),
         });
         let r = report("Buch", &segments, &settings, &store);
         assert!(r.contains("3 Stellen, 2 entschieden, 1 offen"), "{r}");
@@ -857,6 +1004,95 @@ mod tests {
                 .count(),
             2,
             "{r}"
+        );
+    }
+
+    fn german() -> Settings {
+        Settings {
+            normalize_numbers: true,
+            tts_language: "german".into(),
+            ..Settings::default()
+        }
+    }
+
+    fn segs(texts: &[&str]) -> Vec<Segment> {
+        texts
+            .iter()
+            .map(|t| Segment::from_value(serde_json::json!({"normalized_text": t})).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn decisions_follow_their_spot_when_numbers_shift() {
+        let settings = german();
+        let dir = tempfile::tempdir().unwrap();
+        let old = segs(&["Vorwort.", "Sie kam als 3. ins Ziel."]);
+        let mut store = ReviewStore::load(dir.path());
+        let it = &items("B", &old, &settings)[0];
+        // Decided by an older version: no excerpt yet; sync adds it.
+        store.set(it.segment, &it.spot, Some("Dritte".into()));
+        assert!(store.sync(&items("B", &old, &settings)));
+        assert!(store.decisions[0].context.is_some());
+        // A stale legacy entry (no excerpt) that matches nothing.
+        store.decisions.push(Decision {
+            segment: 9,
+            start: 0,
+            original: "C.".into(),
+            replacement: Some("C.".into()),
+            context: None,
+        });
+        // Two paragraphs were added in front: the spot is segment 3 now.
+        let new = segs(&["Titel.", "Neu.", "Vorwort.", "Sie kam als 3. ins Ziel."]);
+        let now = items("B", &new, &settings);
+        assert!(store.sync(&now));
+        assert_eq!(store.decisions.len(), 1, "legacy entry dropped");
+        assert_eq!(store.decisions[0].segment, 3);
+        assert!(store.is_decided(3, &now[0].spot));
+        assert_eq!(
+            store.apply(3, &new[3].normalized_text),
+            "Sie kam als Dritte ins Ziel."
+        );
+        // Nothing to move a second time.
+        assert!(!store.sync(&now));
+    }
+
+    #[test]
+    fn decision_without_its_spot_is_not_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = ReviewStore::load(dir.path());
+        let t = "Sie kam als 3. ins Ziel.";
+        let spot = find_spots(t).remove(0);
+        store.set(0, &spot, Some("Dritte".into()));
+        // Same offset and digits, but now decided by the rules ("am 3."):
+        // no spot there any more, so the old choice must not hit it.
+        let other = "Sie kam am 3. Mai an.";
+        assert!(find_spots(other).is_empty());
+        assert_eq!(store.apply(0, other), other);
+    }
+
+    #[test]
+    fn spoken_excerpt_reads_the_words_after_the_cut() {
+        // The excerpt ends right after "18." – without "schon" the rules
+        // would read "achtzehn." instead of "achtzehnten".
+        let text = "im 16. und 17. Jahrhundert Schilderungen; im 18. schon direkt kommunistische Theorien.";
+        let spot = find_spots(text)
+            .into_iter()
+            .find(|s| s.original == "17.")
+            .unwrap();
+        let it = Item {
+            project: "B".into(),
+            segment: 0,
+            before: text[..spot.start].to_string(),
+            after: format!("{}…", &text[spot.end..text.find("schon").unwrap() - 1]),
+            spot,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = ReviewStore::load(dir.path());
+        store.decide(&it, Some("siebzehnten".into()));
+        let spoken = spoken_excerpt(text, &it, &store);
+        assert_eq!(
+            spoken,
+            "im sechzehnten und siebzehnten Jahrhundert Schilderungen; im achtzehnten…"
         );
     }
 }
