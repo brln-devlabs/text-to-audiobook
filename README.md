@@ -116,7 +116,7 @@ All paths are relative to the project root: the current directory, `$TTA_ROOT` o
 text-to-audiobook
 ```
 
-Select the input and output directories, tick the stories and run the stages:
+Select the input and output directories, tick the stories and run the stages (the ticks are remembered in `cache/project_selection.json`; newly added stories start ticked):
 
 1. **Prepare Segments** – clean, chunk and analyse the texts (cached); the result is written to `output/<project>/text/`
 2. **Generate Audio** – synthesize every segment, optionally audit and regenerate failed chunks (`AUTO_CLEANUP`), denoise, assemble

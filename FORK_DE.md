@@ -109,6 +109,9 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   „2. Generate Audio“ baut die Datei also schnell neu zusammen.
 - **Neutrale Erzählstimme** im `NARRATOR_PROMPT` und deutscher Text für die automatisch
   erzeugte Referenzstimme.
+- **Projektauswahl bleibt erhalten:** welche Texte in der Liste angehakt sind, merkt sich
+  die Oberfläche in `cache/project_selection.json`, auch über einen Neustart hinweg. Neu
+  hinzugekommene Texte sind angehakt.
 
 ## Installation
 
