@@ -7,10 +7,9 @@ Hörbuch. Farben passend zur Oberfläche (Blau/Violett, Orange als Akzent).
 |---|---|
 | `icon.svg` | Vorlage für alle Größen ab 40 px |
 | `icon-small.svg` | vereinfachte Fassung für 16–32 px (dickere Striche, weniger Details) |
-| `icon-256.png` | Fenster-, Taskleisten- und Dock-Icon (`src/gui.rs`) |
+| `icon-256.png` | Fenster-, Taskleisten- und Dock-Icon (`src/gui.rs`), unter Linux auch für den Startmenü-Eintrag (`src/desktop_entry.rs`) |
 | `icon-64.png` | Logo neben dem Titel in der Oberfläche (`src/gui.rs`) |
 | `icon.ico` | Windows: in die `.exe` eingebettet (`build.rs`); 16–32 px aus `icon-small.svg`, 40–256 px aus `icon.svg` |
-| `text-to-audiobook.desktop` | Vorlage für den Startmenü-Eintrag unter Linux |
 
 Nach einer Änderung an den SVGs die PNGs und die ICO neu erzeugen, z. B. mit Inkscape und
 ImageMagick:

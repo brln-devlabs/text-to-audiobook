@@ -24,6 +24,8 @@ pub mod audio;
 pub mod cancel;
 pub mod chunker;
 pub mod config;
+#[cfg(all(feature = "gui", unix, not(target_os = "macos")))]
+pub mod desktop_entry;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod hub;
