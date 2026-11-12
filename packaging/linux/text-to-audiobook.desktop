@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=text-to-audiobook
+GenericName=Audiobook Maker
+GenericName[de]=Hörbuch-Erzeugung
+Comment=Turn Markdown texts into audiobooks
+Comment[de]=Markdown-Texte in Hörbücher verwandeln
+Keywords=TTS;Text-to-Speech;Audiobook;Hörbuch;
+Exec=text-to-audiobook
+Icon=text-to-audiobook
+Terminal=false
+Categories=AudioVideo;Audio;
+StartupWMClass=text-to-audiobook
