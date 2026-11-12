@@ -143,7 +143,12 @@ fn review_cli(
             println!("\n── {name} — spot {} of {} ──", k + 1, items.len());
             println!("{}[[{}]]{}", it.before, it.spot.original, it.after);
             for (i, c) in it.spot.choices.iter().enumerate() {
-                println!("  {:>2}) {:<22} {}", i + 1, c.replacement, c.hint);
+                let label = if text_to_audiobook::review::is_removal(&c.replacement) {
+                    "(remove)"
+                } else {
+                    &c.replacement
+                };
+                println!("  {:>2}) {label:<22} {}", i + 1, c.hint);
             }
             println!("   d) program default   s) skip   m) more context   q) quit");
             let choice = loop {

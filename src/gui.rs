@@ -415,11 +415,26 @@ impl ReviewSession {
         });
         // "Keep as written" means each spot's own text.
         let keep = replacement.as_deref() == Some(current.spot.original.as_str());
+        // "Remove" only where the spot offers it (something else is left
+        // to speak); the others stay open.
+        let remove = replacement.as_deref().is_some_and(review::is_removal);
+        let targets: Vec<usize> = targets
+            .into_iter()
+            .filter(|i| {
+                !remove
+                    || self.items[*i]
+                        .spot
+                        .choices
+                        .iter()
+                        .any(|c| review::is_removal(&c.replacement))
+            })
+            .collect();
         let mut touched: Vec<String> = Vec::new();
         for i in targets {
             let it = &self.items[i];
             let rep = match (choice_index, &replacement) {
                 _ if keep => Some(it.spot.original.clone()),
+                _ if remove => Some(String::new()),
                 (Some(idx), _) if i != self.pos => it
                     .spot
                     .choices
@@ -1710,6 +1725,9 @@ impl App {
                                 Some(r) if r == item.spot.original => {
                                     format!("{r} (keep as written)")
                                 }
+                                Some(r) if review::is_removal(r) => {
+                                    "removed (not spoken)".to_string()
+                                }
                                 Some(r) => r.to_string(),
                             }
                         ))
@@ -1723,10 +1741,21 @@ impl App {
                     .num_columns(2)
                     .show(ui, |ui| {
                         for c in &item.spot.choices {
-                            let preview = format!("{}{}{}", item.before, c.replacement, item.after);
+                            let preview = review::with_choice(
+                                &item.before,
+                                &c.replacement,
+                                &item.after,
+                                &item.spot.original,
+                            );
                             let selected = current.as_ref().and_then(|d| d.replacement.as_ref())
                                 == Some(&c.replacement);
-                            let mut b = egui::Button::new(RichText::new(&c.replacement).size(15.0));
+                            // "Remove": the spot struck through.
+                            let label = if review::is_removal(&c.replacement) {
+                                RichText::new(&item.spot.original).strikethrough()
+                            } else {
+                                RichText::new(&c.replacement)
+                            };
+                            let mut b = egui::Button::new(label.size(15.0));
                             if selected {
                                 b = b.fill(GREEN);
                             }
