@@ -132,6 +132,13 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   halbe Datei. Nach „Stop“ oder einem Fehler wird die Datei noch auf den Stand aller fertigen
   Stücke gebracht, „Force Stop“ lässt sie, wie sie ist. Sobald das fertige Hörbuch
   zusammengebaut ist, wird sie gelöscht.
+- **Hörbuch heißt wie der Text:** Aus `Probe.md` wird `output/Probe/final/Probe.mp3` (und
+  `Probe.wav`) statt `audiobook.mp3`. Ein Projektordner mit mehreren Dateien, die zu einem
+  Hörbuch zusammengefügt werden, ergibt `<Ordnername>.mp3`. Mit `CHAPTER_BY_CHAPTER` heißt
+  jede Kapiteldatei wie ihre Textdatei (`01_Anfang.md` → `01_Anfang.mp3` statt
+  `chapter_01.mp3`); damit ein Player die Kapitel richtig sortiert, sollten die Textdateien
+  also nummeriert sein. Vorhandene `audiobook.mp3` und `chapter_NN.mp3` aus älteren Läufen
+  bleiben liegen und können gelöscht werden.
 - **Automatische Qualitätsprüfung** (`AUTO_CLEANUP = true`, Settings → Audio): nach der
   Sprachausgabe prüft das Programm jedes Audiostück (Sprachanteil, Lautstärke,
   Übersteuerung, Stimmähnlichkeit), löscht durchgefallene und erzeugt sie mit einem anderen

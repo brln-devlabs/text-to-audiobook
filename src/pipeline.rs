@@ -617,7 +617,15 @@ fn ends_paragraph(segments: &[Segment], indices: &[usize]) -> Vec<bool> {
         .collect()
 }
 
-/// One `audiobook.mp3`, or `chapter_NN.mp3` per source file when the
+/// `<name>.mp3` in `final_path`, named like the input file (`Kapitel 1.md`
+/// gives `Kapitel 1.mp3`). `.mp3` is appended rather than set with
+/// `with_extension`, so a dot in the name stays.
+fn output_file(final_path: &Path, name: &str) -> PathBuf {
+    final_path.join(format!("{name}.mp3"))
+}
+
+/// One MP3 named like the input file (several files merged: like the
+/// project folder), or one per source file, named like it, when the
 /// project has several and `chapter_by_chapter` is set. The provisional
 /// audiobook of stage 2 is deleted once they are written. `assembled`
 /// hears how much is done (0 to 1) and what is being written.
@@ -665,11 +673,16 @@ fn assemble_files(
     if by_source.len() <= 1 || !chapter_by_chapter {
         let indices: Vec<usize> = by_source.values().flatten().copied().collect();
         let wavs = wavs_for_segments(wav_paths, &indices);
+        // One input file: its name; several merged: the project's.
+        let name = match by_source.keys().next() {
+            Some(source) if by_source.len() == 1 && !source.is_empty() => source,
+            _ => project_name,
+        };
         if !wavs.is_empty() {
             let out = assemble_with_progress(
                 &wavs,
                 &ends_paragraph(segments, &indices),
-                &final_path.join("audiobook.mp3"),
+                &output_file(final_path, name),
                 &cfg.settings,
                 &|f| assembled(f, "assembling the audiobook"),
             )?;
@@ -705,7 +718,11 @@ fn assemble_files(
         let out = assemble_with_progress(
             wavs,
             &ends_paragraph(segments, indices),
-            &final_path.join(format!("chapter_{chapter_num:02}.mp3")),
+            &if source.is_empty() {
+                output_file(final_path, &format!("chapter_{chapter_num:02}"))
+            } else {
+                output_file(final_path, source)
+            },
             &cfg.settings,
             &|f| assembled((before as f32 + f * wavs.len() as f32) / all, &what),
         )?;
@@ -1648,10 +1665,10 @@ mod tests {
         assert!(!seen.iter().any(|e| matches!(e, Seen::Chunk(_, _, true))));
         assert_eq!(
             res["Book"].as_deref(),
-            Some(out.join("Book/final/chapter_01.mp3").as_path())
+            Some(out.join("Book/final/1_Anfang.mp3").as_path())
         );
-        assert!(out.join("Book/final/chapter_02.wav").exists());
-        assert!(out.join("Kurz/final/audiobook.mp3").exists());
+        assert!(out.join("Book/final/2_Ende.wav").exists());
+        assert!(out.join("Kurz/final/Kurz.mp3").exists());
         assert!(out.join("Book/chunks/chunk_000002.wav").exists());
 
         // Stage 4 without TTS, as one file.
@@ -1659,7 +1676,7 @@ mod tests {
         let res = assemble_final(&c, &segs, &out, &no_progress, None).unwrap();
         assert_eq!(
             res["Book"].as_deref(),
-            Some(out.join("Book/final/audiobook.mp3").as_path())
+            Some(out.join("Book/final/Book.mp3").as_path())
         );
 
         // Stage 3 on mock silence deletes everything.
@@ -1747,7 +1764,7 @@ mod tests {
         assert!(res.is_empty() || res["Buch"].is_none());
         assert!(preview_mp3.exists());
         assert!(!crate::audio::assembler::part_path(&preview_mp3).exists());
-        assert!(!final_dir.join("audiobook.mp3").exists());
+        assert!(!final_dir.join("Buch.mp3").exists());
         let chunks = out.join("Buch/chunks");
         let two = vec![
             chunks.join("chunk_000000.wav"),
@@ -1777,8 +1794,32 @@ mod tests {
         // Resumed to the end: the final file replaces the preview.
         let res = generate_audio(&c, &segs, &out, &no_progress, None, None).unwrap();
         assert!(res["Buch"].is_some());
-        assert!(final_dir.join("audiobook.mp3").exists());
+        assert!(final_dir.join("Buch.mp3").exists());
         assert!(!preview_mp3.exists());
+    }
+
+    #[test]
+    fn output_is_named_like_the_input_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        // A dot in the name stays; a folder with one file takes its name.
+        std::fs::write(c.paths.input_dir.join("Teil 1.2.md"), "Text.").unwrap();
+        let folder = c.paths.input_dir.join("Ordner");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("Geschichte.md"), "Text.").unwrap();
+        let input = c.paths.input_dir.clone();
+        let out = c.paths.output_dir.clone();
+        let segs = prepare_segments(&c, &input, &out, &no_progress, None, None).unwrap();
+        let res = generate_audio(&c, &segs, &out, &no_progress, None, None).unwrap();
+        assert_eq!(
+            res["Teil 1.2"].as_deref(),
+            Some(out.join("Teil 1.2/final/Teil 1.2.mp3").as_path())
+        );
+        assert!(out.join("Teil 1.2/final/Teil 1.2.wav").exists());
+        assert_eq!(
+            res["Ordner"].as_deref(),
+            Some(out.join("Ordner/final/Geschichte.mp3").as_path())
+        );
     }
 
     #[test]
