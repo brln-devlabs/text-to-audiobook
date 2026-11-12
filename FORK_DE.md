@@ -172,15 +172,29 @@ export HF_TOKEN=hf_...
 
 ## Referenzstimme
 
-Ohne eigene Referenz erzeugt das Programm eine zufällige Stimme. Besser ist eine eigene
-Aufnahme von 10 bis 15 Sekunden (eine Stimme, kein Hall, keine Musik):
+Beide Base-Modelle (0.6B und 1.7B) klonen nur eine Stimme: Sie brauchen eine kurze Aufnahme,
+`cache/voice_reference.wav`. Woher sie kommt, legt das Feld „Voice“ in der GUI fest
+(`VOICE_SOURCE`):
+
+- **Recording** (`"file"`): eine eigene Aufnahme, `VOICE_REFERENCE_FILE`. WAV, 10 bis 15
+  Sekunden, eine Stimme, kein Hall, keine Musik; das Programm macht daraus Mono und kürzt
+  auf 20 Sekunden. Geht mit beiden Modellen und gibt die verlässlichste Stimme.
+- **From description** (`"design"`): eine Stimme aus der Beschreibung (`NARRATOR_PROMPT`).
+  Das übernimmt das eigene Modell Qwen3-TTS 1.7B VoiceDesign (`VOICE_DESIGN_MODEL`,
+  einmal etwa 4 GB Download); es spricht einmal eine kurze Probe, die das gewählte
+  Base-Modell (0.6B oder 1.7B) dann klont. Eine 0.6B-Variante davon gibt es nicht.
+- **Random** (`"random"`, Standard): das Base-Modell erfindet selbst eine Stimme, welche,
+  hängt von `VOICE_SEED` ab („New Random Voice“ nimmt den nächsten Seed).
+
+„Apply Voice“ speichert die Wahl und erzeugt die Referenz sofort. Woraus sie stammt, steht in
+`cache/voice_reference.json`; neu erzeugt wird sie nur, wenn sich die Wahl ändert. Jedes
+Audiostück merkt sich die Stimme, mit der es gesprochen wurde: Nach einem Stimmwechsel
+spricht „2. Generate Audio“ alle Stücke neu. Eine von Hand nach `cache/voice_reference.wav`
+gelegte Aufnahme bleibt bei „Random“ unangetastet. Eine MP3 wandelt ffmpeg um:
 
 ```bash
-ffmpeg -i aufnahme.mp3 -t 15 -ac 1 -ar 24000 cache/voice_reference.wav
+ffmpeg -i aufnahme.mp3 -t 15 -ac 1 -ar 24000 aufnahme.wav
 ```
-
-Andere Abtastraten rechnet das Programm selbst um, ffmpeg wird dafür nur zum Zuschneiden
-und Umwandeln der Aufnahme gebraucht.
 
 Eine frei verwendbare deutsche Stimme (CC0) gibt es im
 [Thorsten-Voice-Datensatz](https://huggingface.co/datasets/Thorsten-Voice/TV-44kHz-Full).

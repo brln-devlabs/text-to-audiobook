@@ -26,11 +26,15 @@ An open-source text-to-speech application that turns Markdown texts into audiobo
 
 Input and output directories, the stories (projects) found in the input directory, the two stage buttons, progress and the live log.
 
-### Voice Description
+### Voice
 
 ![Voice Description](docs/img/02-project-settings.png)
 
-Narrator description and regeneration of the voice reference (`cache/voice_reference.wav`).
+Where the narrator voice (`cache/voice_reference.wav`) comes from: your own **recording**, a
+**description** spoken by the Qwen3-TTS 1.7B VoiceDesign model, or a **random** voice of the
+Base model (depends on the voice seed). The Base models (0.6B and 1.7B) only clone the
+reference; the description needs the separate VoiceDesign model, which is loaded just once to
+make the reference. After a voice change, Stage 2 speaks the chunks again.
 
 ### Quick Config
 
@@ -192,7 +196,10 @@ Edit `settings.json` in the project root or use the settings window. Keys and de
 | `CHAPTER_BY_CHAPTER` | false | one MP3 per source file |
 | `VOCALIZE_CHAPTER_NAMES` | false | speak the chapter name (from the file name) first |
 | `LOG_LEVEL_CONSOLE` / `LOG_LEVEL_FILE` | `INFO` / `DEBUG` | log levels |
-| `NARRATOR_PROMPT` | calm narrator | voice description (shown in the GUI) |
+| `VOICE_SOURCE` | `random` | narrator voice: `file` (recording), `design` (from the description), `random` |
+| `VOICE_REFERENCE_FILE` | – | recording for `VOICE_SOURCE = "file"` (WAV, 10–15 s) |
+| `NARRATOR_PROMPT` | calm narrator | voice description for `VOICE_SOURCE = "design"` |
+| `VOICE_DESIGN_MODEL` | `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` | model that turns the description into a voice |
 
 ## Testing
 
@@ -236,7 +243,7 @@ With `USE_LLM = true`, **Llama-3.2-1B-Instruct** (4-bit GGUF) additionally order
 6. Join with crossfades and pauses, export WAV + MP3
 
 ### Voice Anchoring
-The narrator voice is locked after the first chunk. Every following chunk uses that audio as voice reference, which keeps the speaker identity stable across the whole book. For your own narrator, put a 10–15 s recording at `cache/voice_reference.wav` (see [FORK_DE.md](FORK_DE.md)).
+The narrator voice is locked after the first chunk. Every following chunk uses that audio as voice reference, which keeps the speaker identity stable across the whole book. For your own narrator, choose a 10–15 s recording in the Voice panel (`VOICE_SOURCE = "file"`, see [FORK_DE.md](FORK_DE.md)).
 
 ## Differences from the Python version
 
@@ -269,7 +276,7 @@ Format: `YYYY-MM-DD HH:MM:SS,mmm | LEVEL | module | message`
 | `could not find native static library cudart_static` | Build with `--features cuda` (Llama stays on the CPU); for `llm-cuda` set `CUDA_LIBRARY_PATH` to the directory with the static CUDA libraries |
 | `CUDA out of memory` | Use the 0.6B model, keep `LLM_GPU_LAYERS = 0`, close other GPU programs |
 | GUI does not start on Linux (`xkbcommon`) | Install `libxkbcommon-x11-0` (Debian/Ubuntu) and GPU/OpenGL drivers |
-| Voice inconsistency between chunks | Check `cache/voice_reference.wav`; delete `output/<project>/chunks` after changing model or reference |
+| Voice inconsistency between chunks | Check `cache/voice_reference.wav`; after changing the model, delete `output/<project>/chunks` (a new voice is picked up automatically) |
 | Want to test without models | `text-to-audiobook --mock-models run` |
 
 ## References

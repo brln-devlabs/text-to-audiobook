@@ -23,6 +23,7 @@
 
 #[cfg(feature = "tts")]
 pub mod qwen;
+pub mod voice;
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -106,6 +107,20 @@ pub trait TtsBackend: Send {
 
     /// Number of text tokens, or None when no tokenizer is available.
     fn count_tokens(&self, text: &str) -> Option<usize>;
+
+    /// Speak `text` in a voice made from `description` (VoiceDesign models
+    /// only); used once to create the voice reference.
+    fn generate_voice_design(
+        &mut self,
+        _text: &str,
+        _language: &str,
+        _description: &str,
+        _temperature: f64,
+        _top_p: f64,
+        _seed: u64,
+    ) -> Result<Wave> {
+        bail!("this model cannot make a voice from a description")
+    }
 }
 
 static PARAGRAPH_BREAK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\s*\n").unwrap());
@@ -139,6 +154,22 @@ fn split_after_sentence_end(text: &str) -> Vec<String> {
     }
     out.push(text[start..].to_string());
     out
+}
+
+const VOICE_MARK: &str = "\n#voice ";
+
+/// Content of `chunk_NNNNNN.txt`: the spoken text and the voice it was
+/// spoken with.
+fn make_record(text: &str, voice: &str) -> String {
+    format!("{text}{VOICE_MARK}{voice}")
+}
+
+/// (text, voice) of a record; records of older versions have no voice.
+fn parse_record(record: &str) -> (&str, Option<&str>) {
+    match record.rsplit_once(VOICE_MARK) {
+        Some((text, voice)) => (text, Some(voice.trim())),
+        None => (record, None),
+    }
 }
 
 /// Text as it is spoken: review decisions of segment `index` applied, then
@@ -180,6 +211,8 @@ pub struct TtsEngine {
     /// Added to `VOICE_SEED` when chunks are synthesized again after a
     /// failed audit (the same seed would give the same result).
     seed_offset: u64,
+    /// VoiceDesign backend for tests; normally loaded on demand.
+    design_backend: Option<Box<dyn TtsBackend>>,
 }
 
 impl TtsEngine {
@@ -193,7 +226,13 @@ impl TtsEngine {
             paths: paths.clone(),
             review: None,
             seed_offset: 0,
+            design_backend: None,
         }
+    }
+
+    /// Use `backend` for `VOICE_SOURCE = "design"` (tests).
+    pub fn set_design_backend(&mut self, backend: Box<dyn TtsBackend>) {
+        self.design_backend = Some(backend);
     }
 
     /// Engine with an already loaded backend (tests, other engines).
@@ -212,12 +251,28 @@ impl TtsEngine {
         &self.settings
     }
 
-    /// Load the TTS model and make sure the voice reference exists
-    /// (generating it with the loaded model when missing).
+    /// Load the TTS model and make sure the voice reference matches
+    /// `VOICE_SOURCE` (made or imported when missing or out of date).
     pub fn load(&mut self) -> Result<()> {
+        let ref_path = self.paths.voice_ref_path();
+        let language = resolve_language(&self.settings, Some("english"));
+        let want = voice::wanted(&self.settings, &language);
+        let update = voice::needs_update(&self.paths, &want);
+        // A chosen file needs no model; the VoiceDesign model is loaded and
+        // dropped again before the Base model, so both never share the GPU.
+        if update && want.source == "file" {
+            let src = PathBuf::from(want.file.clone().unwrap_or_default());
+            let secs = voice::import_file(&src, &ref_path)?;
+            voice::write_meta(&self.paths, &want)?;
+            log::info!("Voice reference taken from {} ({secs:.1} s)", src.display());
+        }
         if self.backend.is_none() && self.settings.mock_models {
             log::info!("Mock mode: TTS model not loaded, writing silence");
             return Ok(());
+        }
+        if update && want.source == "design" {
+            self.design_voice_reference(&ref_path, &language)?;
+            voice::write_meta(&self.paths, &want)?;
         }
         #[cfg(feature = "tts")]
         {
@@ -233,14 +288,15 @@ impl TtsEngine {
                 return Ok(());
             }
         }
-        let ref_path = self.paths.voice_ref_path();
-        if !ref_path.exists() {
+        if update && want.source == "random" {
             self.generate_voice_reference(&ref_path)?;
+            voice::write_meta(&self.paths, &want)?;
         }
         if ref_path.exists() {
             log::info!(
-                "Voice reference ready: {}",
-                ref_path.file_name().unwrap_or_default().to_string_lossy()
+                "Voice reference ready: {} ({})",
+                ref_path.file_name().unwrap_or_default().to_string_lossy(),
+                voice::describe(&self.paths)
             );
             self.voice_ref_path = Some(ref_path);
         }
@@ -252,6 +308,52 @@ impl TtsEngine {
             log::info!("Unloading TTS model");
         }
         self.voice_ref_path = None;
+    }
+
+    /// Speak the reference text with the VoiceDesign model in the voice of
+    /// `NARRATOR_PROMPT`.
+    fn design_voice_reference(&mut self, ref_path: &Path, language: &str) -> Result<()> {
+        let description = self.settings.narrator_prompt.trim().to_string();
+        if description.is_empty() {
+            bail!("the voice description is empty");
+        }
+        let mut backend = match self.design_backend.take() {
+            Some(b) => b,
+            None => self.load_design_backend()?,
+        };
+        log::info!(
+            "Making the narrator voice from the description with {} ...",
+            self.settings.voice_design_model
+        );
+        let wave = backend.generate_voice_design(
+            voice_ref_text(language),
+            language,
+            &description,
+            REFERENCE_TEMPERATURE,
+            REFERENCE_TOP_P,
+            self.settings.voice_seed,
+        );
+        drop(backend);
+        let wave = wave?;
+        if wave.samples.is_empty() {
+            bail!("VoiceDesign model returned no audio");
+        }
+        write_mono_wav(ref_path, &wave.samples, wave.sample_rate)?;
+        log::info!("Voice reference saved: {}", ref_path.display());
+        Ok(())
+    }
+
+    #[cfg(feature = "tts")]
+    fn load_design_backend(&self) -> Result<Box<dyn TtsBackend>> {
+        Ok(Box::new(qwen::QwenBackend::load_voice_design(
+            &self.settings.voice_design_model,
+            &self.settings.tts_dtype,
+        )?))
+    }
+
+    #[cfg(not(feature = "tts"))]
+    fn load_design_backend(&self) -> Result<Box<dyn TtsBackend>> {
+        bail!("Qwen3-TTS support not compiled in (feature \"tts\")")
     }
 
     /// Generate the voice reference WAV with the loaded model.
@@ -276,18 +378,36 @@ impl TtsEngine {
         Ok(())
     }
 
+    /// Make the voice reference match the settings now (GUI "Apply voice");
+    /// loads a model only when the reference has to be made.
+    pub fn prepare_voice(settings: &Settings, paths: &Paths) -> Result<PathBuf> {
+        let language = resolve_language(settings, Some("english"));
+        if voice::needs_update(paths, &voice::wanted(settings, &language)) {
+            let mut engine = TtsEngine::new(settings, paths);
+            engine.load()?;
+            engine.unload();
+        }
+        let ref_path = paths.voice_ref_path();
+        if !ref_path.exists() {
+            bail!("TTS model not available, no voice reference made");
+        }
+        Ok(ref_path)
+    }
+
     /// Delete and regenerate the voice reference (GUI "Regen Voice Ref").
     pub fn regenerate_voice_reference(settings: &Settings, paths: &Paths) -> Result<PathBuf> {
         let ref_path = paths.voice_ref_path();
-        if ref_path.exists() {
-            std::fs::remove_file(&ref_path)?;
+        for f in [ref_path.clone(), voice::meta_path(paths)] {
+            if f.exists() {
+                std::fs::remove_file(&f)?;
+            }
         }
         let mut engine = TtsEngine::new(settings, paths);
         engine.load()?;
-        if !engine.is_loaded() {
-            bail!("TTS model not available");
-        }
         engine.unload();
+        if !ref_path.exists() {
+            bail!("TTS model not available, no voice reference made");
+        }
         Ok(ref_path)
     }
 
@@ -577,6 +697,29 @@ impl TtsEngine {
         spoken_text(&self.settings, None, 0, text, language)
     }
 
+    /// Chunk of an older version without a voice note: true (stale) if the
+    /// voice reference is newer than its audio, else note the current voice.
+    fn adopt_or_stale(
+        &self,
+        i: usize,
+        parts: &[PathBuf],
+        record: &Path,
+        text: &str,
+        voice: &str,
+    ) -> bool {
+        let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let reference = modified(&self.paths.voice_ref_path());
+        let audio = parts.iter().filter_map(|p| modified(p)).min();
+        if let (Some(r), Some(a)) = (reference, audio)
+            && r > a
+        {
+            log::info!("Chunk {i}: the narrator voice is newer than the audio, regenerating");
+            return true;
+        }
+        let _ = std::fs::write(record, make_record(text, voice));
+        false
+    }
+
     /// Spoken text of chunk `i` as it was synthesized (`chunk_NNNNNN.txt`).
     pub fn text_record(output_dir: &Path, i: usize) -> PathBuf {
         output_dir.join(format!("chunk_{i:06}.txt"))
@@ -610,6 +753,8 @@ impl TtsEngine {
     ) -> Result<Vec<PathBuf>> {
         std::fs::create_dir_all(output_dir)?;
         Self::migrate_legacy_chunk_names(output_dir, segments.len());
+        // Every chunk notes the voice it was spoken with.
+        let voice = voice::voice_id(&self.paths.voice_ref_path());
         let mut wav_paths = Vec::new();
 
         for (i, seg) in segments.iter().enumerate() {
@@ -629,17 +774,31 @@ impl TtsEngine {
 
             let mut existing = Self::existing_parts(output_dir, i);
             if !existing.is_empty() {
-                match std::fs::read_to_string(&record) {
-                    Ok(old) if old != text => {
-                        log::info!("Chunk {i}: text changed since it was generated, regenerating");
-                        for p in existing.drain(..) {
-                            let _ = std::fs::remove_file(p);
+                let stale = match std::fs::read_to_string(&record) {
+                    Ok(old) => {
+                        let (old_text, old_voice) = parse_record(&old);
+                        if old_text != text {
+                            log::info!(
+                                "Chunk {i}: text changed since it was generated, regenerating"
+                            );
+                            true
+                        } else if old_voice.is_some_and(|v| v != voice) {
+                            log::info!("Chunk {i}: the narrator voice changed, regenerating");
+                            true
+                        } else if old_voice.is_none() {
+                            // No voice noted yet (older version): adopt,
+                            // unless the voice was replaced after the chunk.
+                            self.adopt_or_stale(i, &existing, &record, &text, &voice)
+                        } else {
+                            false
                         }
                     }
-                    Ok(_) => {}
                     // Output of an older version: adopt the current text.
-                    Err(_) => {
-                        let _ = std::fs::write(&record, &text);
+                    Err(_) => self.adopt_or_stale(i, &existing, &record, &text, &voice),
+                };
+                if stale {
+                    for p in existing.drain(..) {
+                        let _ = std::fs::remove_file(p);
                     }
                 }
             }
@@ -678,7 +837,7 @@ impl TtsEngine {
                 }
                 Err(e) => return Err(e),
             };
-            if let Err(e) = std::fs::write(&record, &text) {
+            if let Err(e) = std::fs::write(&record, make_record(&text, &voice)) {
                 log::warn!("Could not write {}: {e}", record.display());
             }
             if i == 0 {
@@ -709,6 +868,8 @@ pub mod tests {
     pub struct FakeTts {
         pub clone_calls: Arc<Mutex<Vec<(String, String, PathBuf)>>>,
         pub generate_calls: Arc<Mutex<Vec<(String, String)>>>,
+        /// (text, description) of voice design calls.
+        pub design_calls: Arc<Mutex<Vec<(String, String)>>>,
         pub tokens: bool,
         pub on_clone: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     }
@@ -757,6 +918,26 @@ pub mod tests {
 
         fn count_tokens(&self, text: &str) -> Option<usize> {
             self.tokens.then(|| word_count(text))
+        }
+
+        fn generate_voice_design(
+            &mut self,
+            text: &str,
+            _language: &str,
+            description: &str,
+            _t: f64,
+            _p: f64,
+            _s: u64,
+        ) -> Result<Wave> {
+            self.design_calls
+                .lock()
+                .unwrap()
+                .push((text.into(), description.into()));
+            // A different sound than the Base model's, so the file changes.
+            Ok(Wave {
+                samples: vec![0.05; 24000 * 4],
+                sample_rate: 24000,
+            })
         }
     }
 
@@ -844,10 +1025,8 @@ pub mod tests {
             )
             .unwrap();
         assert_eq!(fake.clone_calls.lock().unwrap().len(), 2);
-        assert_eq!(
-            std::fs::read_to_string(TtsEngine::text_record(&out, 1)).unwrap(),
-            "Zweiter."
-        );
+        let record = std::fs::read_to_string(TtsEngine::text_record(&out, 1)).unwrap();
+        assert_eq!(parse_record(&record).0, "Zweiter.");
         // Same text: reused. Changed text under the same number: new audio.
         engine
             .process_all(
@@ -860,6 +1039,78 @@ pub mod tests {
         let calls = fake.clone_calls.lock().unwrap();
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[2].0, "Anderer.");
+    }
+
+    #[test]
+    fn new_voice_regenerates_old_records_are_adopted() {
+        let (dir, fake, mut engine) = setup(&Settings::default());
+        let out = dir.path().join("out");
+        let two = segs(&[("Erster.", None), ("Zweiter.", None)]);
+        engine.process_all(&two, &out, None, None).unwrap();
+        assert_eq!(fake.clone_calls.lock().unwrap().len(), 2);
+        // Records of an older version (text only) are taken over as they are.
+        std::fs::write(TtsEngine::text_record(&out, 1), "Zweiter.").unwrap();
+        engine.process_all(&two, &out, None, None).unwrap();
+        assert_eq!(fake.clone_calls.lock().unwrap().len(), 2);
+        let record = std::fs::read_to_string(TtsEngine::text_record(&out, 1)).unwrap();
+        assert!(parse_record(&record).1.is_some());
+        // An old record whose audio is older than the voice reference: the
+        // voice was replaced together with the update, so it is spoken again.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let reference = dir.path().join("cache/voice_reference.wav");
+        write_mono_wav(&reference, &[0.0; 24000], 24000).unwrap();
+        std::fs::write(TtsEngine::text_record(&out, 1), "Zweiter.").unwrap();
+        engine.process_all(&two, &out, None, None).unwrap();
+        assert_eq!(fake.clone_calls.lock().unwrap().len(), 3);
+        // Another narrator: every chunk is spoken again.
+        let reference = dir.path().join("cache/voice_reference.wav");
+        write_mono_wav(&reference, &[0.1; 48000], 24000).unwrap();
+        engine.process_all(&two, &out, None, None).unwrap();
+        assert_eq!(fake.clone_calls.lock().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn voice_from_file_or_description_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        std::fs::create_dir_all(&paths.cache_dir).unwrap();
+        let rec = dir.path().join("sprecher.wav");
+        write_mono_wav(&rec, &vec![0.2; 24000 * 6], 24000).unwrap();
+        // File: imported, no model needed.
+        let s = Settings {
+            voice_source: "file".into(),
+            voice_reference_file: rec.to_string_lossy().into(),
+            ..Settings::default()
+        };
+        let mut e = TtsEngine::with_backend(Box::new(FakeTts::default()), &s, &paths);
+        e.load().unwrap();
+        assert_eq!(voice::read_meta(&paths).unwrap().source, "file");
+        assert!(voice::describe(&paths).contains("sprecher.wav"));
+        let first = voice::voice_id(&paths.voice_ref_path());
+        // Description: made by the VoiceDesign backend, once.
+        let s = Settings {
+            voice_source: "design".into(),
+            narrator_prompt: "Eine ruhige Stimme.".into(),
+            ..Settings::default()
+        };
+        let design = FakeTts::default();
+        let mut e = TtsEngine::with_backend(Box::new(FakeTts::default()), &s, &paths);
+        e.set_design_backend(Box::new(design.clone()));
+        e.load().unwrap();
+        assert_eq!(design.design_calls.lock().unwrap().len(), 1);
+        assert_eq!(
+            design.design_calls.lock().unwrap()[0].1,
+            "Eine ruhige Stimme."
+        );
+        assert_ne!(voice::voice_id(&paths.voice_ref_path()), first);
+        let mut e = TtsEngine::with_backend(Box::new(FakeTts::default()), &s, &paths);
+        e.set_design_backend(Box::new(design.clone()));
+        e.load().unwrap();
+        assert_eq!(
+            design.design_calls.lock().unwrap().len(),
+            1,
+            "not made twice"
+        );
     }
 
     #[test]
