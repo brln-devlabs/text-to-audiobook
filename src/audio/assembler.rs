@@ -20,6 +20,10 @@
 //! version: linear fades between -120 dB and 0 dB, chunks are joined with
 //! `CROSSFADE_MS`, pauses are appended with pydub's default crossfade of
 //! 100 ms. The result is streamed to disk, so long books need little memory.
+//!
+//! With `LOUDNESS_TARGET_LUFS` below 0 the chunks are measured first and the
+//! whole file gets one gain to that loudness; a limiter catches the peaks
+//! (see [`super::loudness`]).
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -29,6 +33,9 @@ use std::sync::LazyLock;
 use anyhow::{Context, Result, anyhow};
 use regex::Regex;
 
+use super::loudness::{
+    Limiter, LoudnessMeter, PEAK_CEILING_DBFS, db_to_gain, normalization_gain_db,
+};
 use super::{read_wav, resample, to_i16};
 
 /// pydub's default crossfade for `append()` without an explicit value;
@@ -94,21 +101,110 @@ pub fn silence_plan(
     plan
 }
 
-/// Streaming WAV + MP3 writer with pydub-style crossfades.
-struct Mixer {
-    sample_rate: u32,
+/// Receives the mixed audio block by block.
+type Sink<'a> = dyn FnMut(&[f32]) -> Result<()> + 'a;
+
+/// pydub-style crossfading. Finished samples go to the sink; the last
+/// `keep` frames stay back for the next crossfade.
+struct Crossfader {
     pending: Vec<f32>,
     keep: usize,
+    flush_at: usize,
     started: bool,
     total_frames: usize,
+}
+
+impl Crossfader {
+    fn new(sample_rate: u32, keep: usize) -> Self {
+        Self {
+            pending: Vec::new(),
+            keep,
+            flush_at: FLUSH_SECONDS * sample_rate as usize + keep,
+            started: false,
+            total_frames: 0,
+        }
+    }
+
+    /// Append `audio`, overlapping the last `crossfade` frames: the tail
+    /// fades out and the head of `audio` fades in (both linear in amplitude).
+    fn append(&mut self, audio: &[f32], crossfade: usize, sink: &mut Sink) -> Result<()> {
+        if !self.started {
+            self.started = true;
+            self.pending.extend_from_slice(audio);
+            self.total_frames += audio.len();
+        } else {
+            let cf = crossfade.min(self.pending.len()).min(audio.len());
+            let start = self.pending.len() - cf;
+            for (i, (tail, head)) in self.pending[start..].iter_mut().zip(audio).enumerate() {
+                let t = i as f64 / cf as f64;
+                let fade_out = 1.0 + (FADE_FLOOR - 1.0) * t;
+                let fade_in = FADE_FLOOR + (1.0 - FADE_FLOOR) * t;
+                let mixed = *tail as f64 * fade_out + *head as f64 * fade_in;
+                *tail = mixed.clamp(-1.0, 1.0) as f32;
+            }
+            self.pending.extend_from_slice(&audio[cf..]);
+            self.total_frames += audio.len() - cf;
+        }
+        if self.pending.len() > self.flush_at {
+            let n = self.pending.len() - self.keep;
+            sink(&self.pending[..n])?;
+            self.pending.drain(..n);
+        }
+        Ok(())
+    }
+
+    /// Hand over the rest; returns the number of frames mixed.
+    fn finish(self, sink: &mut Sink) -> Result<usize> {
+        sink(&self.pending)?;
+        Ok(self.total_frames)
+    }
+}
+
+/// Mix the chunks with crossfades and the pauses of `plan` at `rate`.
+fn mix(
+    chunk_wavs: &[PathBuf],
+    plan: &[Option<u32>],
+    rate: u32,
+    crossfade_ms: u32,
+    sink: &mut Sink,
+) -> Result<usize> {
+    let frames = |ms: u32| (ms as u64 * rate as u64 / 1000) as usize;
+    let keep = frames(crossfade_ms.max(SILENCE_CROSSFADE_MS)) + 1;
+    let chunk_xf = frames(crossfade_ms);
+    let silence_xf = frames(SILENCE_CROSSFADE_MS);
+    let mut mixer = Crossfader::new(rate, keep);
+    for (i, wav_path) in chunk_wavs.iter().enumerate() {
+        log::debug!("Loading chunk {i}: {}", wav_path.display());
+        let audio = read_wav(wav_path)?;
+        let mut samples = audio.to_mono();
+        if audio.sample_rate != rate {
+            samples = resample(&samples, audio.sample_rate, rate);
+        }
+        mixer.append(&samples, chunk_xf, sink)?;
+        if let Some(ms) = plan[i] {
+            mixer.append(&vec![0f32; frames(ms)], silence_xf, sink)?;
+        }
+    }
+    mixer.finish(sink)
+}
+
+/// Streaming WAV + MP3 writer, with optional gain and limiter.
+struct Writer {
     wav: hound::WavWriter<BufWriter<File>>,
     mp3: mp3lame_encoder::Encoder,
     mp3_file: BufWriter<File>,
     mp3_buf: Vec<u8>,
+    /// Loudness gain and the limiter behind it (None: written as mixed).
+    level: Option<(f32, Limiter)>,
 }
 
-impl Mixer {
-    fn new(wav_path: &Path, mp3_path: &Path, sample_rate: u32, keep: usize) -> Result<Self> {
+impl Writer {
+    fn new(
+        wav_path: &Path,
+        mp3_path: &Path,
+        sample_rate: u32,
+        gain_db: Option<f64>,
+    ) -> Result<Self> {
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate,
@@ -142,51 +238,36 @@ impl Mixer {
             File::create(mp3_path).with_context(|| format!("creating {}", mp3_path.display()))?,
         );
         Ok(Self {
-            sample_rate,
-            pending: Vec::new(),
-            keep,
-            started: false,
-            total_frames: 0,
             wav,
             mp3,
             mp3_file,
             mp3_buf: Vec::new(),
+            level: gain_db.map(|db| {
+                (
+                    db_to_gain(db) as f32,
+                    Limiter::new(PEAK_CEILING_DBFS, sample_rate),
+                )
+            }),
         })
     }
 
-    fn ms_to_frames(&self, ms: u32) -> usize {
-        (ms as u64 * self.sample_rate as u64 / 1000) as usize
-    }
-
-    /// Append `audio`, overlapping the last `crossfade` frames: the tail
-    /// fades out and the head of `audio` fades in (both linear in amplitude).
-    fn append(&mut self, audio: &[f32], crossfade: usize) -> Result<()> {
-        if !self.started {
-            self.started = true;
-            self.pending.extend_from_slice(audio);
-            self.total_frames += audio.len();
-        } else {
-            let cf = crossfade.min(self.pending.len()).min(audio.len());
-            let start = self.pending.len() - cf;
-            for (i, (tail, head)) in self.pending[start..].iter_mut().zip(audio).enumerate() {
-                let t = i as f64 / cf as f64;
-                let fade_out = 1.0 + (FADE_FLOOR - 1.0) * t;
-                let fade_in = FADE_FLOOR + (1.0 - FADE_FLOOR) * t;
-                let mixed = *tail as f64 * fade_out + *head as f64 * fade_in;
-                *tail = mixed.clamp(-1.0, 1.0) as f32;
+    fn write(&mut self, samples: &[f32]) -> Result<()> {
+        match &mut self.level {
+            Some((gain, limiter)) => {
+                let louder: Vec<f32> = samples.iter().map(|s| s * *gain).collect();
+                let mut limited = Vec::with_capacity(louder.len());
+                limiter.process(&louder, &mut limited);
+                self.encode(&limited)
             }
-            self.pending.extend_from_slice(&audio[cf..]);
-            self.total_frames += audio.len() - cf;
+            None => self.encode(samples),
         }
-        if self.pending.len() > FLUSH_SECONDS * self.sample_rate as usize + self.keep {
-            let n = self.pending.len() - self.keep;
-            self.write_out(n)?;
-        }
-        Ok(())
     }
 
-    fn write_out(&mut self, n: usize) -> Result<()> {
-        let pcm: Vec<i16> = self.pending[..n].iter().map(|s| to_i16(*s)).collect();
+    fn encode(&mut self, samples: &[f32]) -> Result<()> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+        let pcm: Vec<i16> = samples.iter().map(|s| to_i16(*s)).collect();
         {
             let mut w16 = self.wav.get_i16_writer(pcm.len() as u32);
             for s in &pcm {
@@ -201,13 +282,19 @@ impl Mixer {
             .encode_to_vec(mp3lame_encoder::MonoPcm(&pcm), &mut self.mp3_buf)
             .map_err(|e| anyhow!("MP3 encoding failed: {e:?}"))?;
         self.mp3_file.write_all(&self.mp3_buf)?;
-        self.pending.drain(..n);
         Ok(())
     }
 
-    fn finish(mut self) -> Result<usize> {
-        let n = self.pending.len();
-        self.write_out(n)?;
+    fn finish(mut self) -> Result<()> {
+        if let Some((_, mut limiter)) = self.level.take() {
+            let mut tail = Vec::new();
+            limiter.flush(&mut tail);
+            self.encode(&tail)?;
+            let reduction = limiter.max_reduction_db();
+            if reduction < 0.0 {
+                log::info!("Limiter: peaks lowered by up to {:.1} dB", -reduction);
+            }
+        }
         self.wav.finalize()?;
         self.mp3_buf.clear();
         self.mp3_buf.reserve(8192);
@@ -216,7 +303,7 @@ impl Mixer {
             .map_err(|e| anyhow!("MP3 encoding failed: {e:?}"))?;
         self.mp3_file.write_all(&self.mp3_buf)?;
         self.mp3_file.flush()?;
-        Ok(self.total_frames)
+        Ok(())
     }
 }
 
@@ -226,6 +313,32 @@ fn wav_rate(path: &Path) -> Result<u32> {
         Ok(r) => Ok(r.spec().sample_rate),
         Err(_) => Ok(read_wav(path)?.sample_rate),
     }
+}
+
+/// Gain in dB for `LOUDNESS_TARGET_LUFS`, measured on a first mixing pass
+/// (None: off, or no speech to measure).
+fn loudness_gain_db(
+    chunk_wavs: &[PathBuf],
+    plan: &[Option<u32>],
+    rate: u32,
+    settings: &crate::config::Settings,
+) -> Result<Option<f64>> {
+    let target = settings.loudness_target_lufs;
+    if target >= 0 {
+        return Ok(None);
+    }
+    let mut meter = LoudnessMeter::new(rate);
+    mix(chunk_wavs, plan, rate, settings.crossfade_ms, &mut |s| {
+        meter.process(s);
+        Ok(())
+    })?;
+    let Some(measured) = meter.integrated_lufs() else {
+        log::info!("Loudness: no speech found, level left unchanged");
+        return Ok(None);
+    };
+    let gain = normalization_gain_db(measured, target as f64);
+    log::info!("Loudness: {measured:.1} LUFS measured, target {target} LUFS, gain {gain:+.1} dB");
+    Ok(Some(gain))
 }
 
 /// Join `chunk_wavs` into `<out>.wav` and `<out>.mp3`; returns the MP3 path.
@@ -260,26 +373,12 @@ pub fn assemble(
             settings.silence_after_period_ms,
             settings.silence_after_paragraph_ms,
         );
-        let crossfade_ms = settings.crossfade_ms;
-        let keep = (crossfade_ms.max(SILENCE_CROSSFADE_MS) as usize * rate as usize) / 1000 + 1;
-        let mut mixer = Mixer::new(&wav_out, &mp3_out, rate, keep)?;
-        let chunk_xf = mixer.ms_to_frames(crossfade_ms);
-        let silence_xf = mixer.ms_to_frames(SILENCE_CROSSFADE_MS);
-
-        for (i, wav_path) in chunk_wavs.iter().enumerate() {
-            log::debug!("Loading chunk {i}: {}", wav_path.display());
-            let audio = read_wav(wav_path)?;
-            let mut samples = audio.to_mono();
-            if audio.sample_rate != rate {
-                samples = resample(&samples, audio.sample_rate, rate);
-            }
-            mixer.append(&samples, chunk_xf)?;
-            if let Some(ms) = plan[i] {
-                let silence = vec![0f32; mixer.ms_to_frames(ms)];
-                mixer.append(&silence, silence_xf)?;
-            }
-        }
-        let frames = mixer.finish()?;
+        let gain_db = loudness_gain_db(chunk_wavs, &plan, rate, settings)?;
+        let mut writer = Writer::new(&wav_out, &mp3_out, rate, gain_db)?;
+        let frames = mix(chunk_wavs, &plan, rate, settings.crossfade_ms, &mut |s| {
+            writer.write(s)
+        })?;
+        writer.finish()?;
         log::info!(
             "Exported WAV: {} ({:.1} s)",
             wav_out.display(),
@@ -381,6 +480,69 @@ mod tests {
         let wav = crate::audio::read_wav(&out.with_extension("wav")).unwrap();
         assert_eq!(wav.sample_rate, 24000);
         assert_eq!(wav.samples.len(), 48000);
+    }
+
+    fn tone_chunks(dir: &Path, amp: f32, n: usize) -> Vec<PathBuf> {
+        let sr = 24000;
+        let tone: Vec<f32> = (0..sr * 3)
+            .map(|i| amp * (2.0 * std::f32::consts::PI * 997.0 * i as f32 / sr as f32).sin())
+            .collect();
+        (0..n)
+            .map(|i| {
+                let p = dir.join(format!("chunk_{i:06}.wav"));
+                write_mono_wav(&p, &tone, sr as u32).unwrap();
+                p
+            })
+            .collect()
+    }
+
+    fn lufs(path: &Path) -> f64 {
+        let wav = crate::audio::read_wav(path).unwrap();
+        let mut m = crate::audio::loudness::LoudnessMeter::new(wav.sample_rate);
+        m.process(&wav.samples);
+        m.integrated_lufs().unwrap()
+    }
+
+    #[test]
+    fn assemble_brings_quiet_speech_to_the_target_loudness() {
+        let dir = tempfile::tempdir().unwrap();
+        // About -29 LUFS.
+        let wavs = tone_chunks(dir.path(), 0.05, 3);
+        let out = dir.path().join("out.mp3");
+        let settings = Settings::default();
+        assemble(&wavs, &[false, true, true], &out, &settings).unwrap();
+        let l = lufs(&out.with_extension("wav"));
+        assert!(
+            (l - settings.loudness_target_lufs as f64).abs() < 0.05,
+            "{l} LUFS"
+        );
+
+        // Too loud for the target: peaks stay below the ceiling.
+        let wavs = tone_chunks(dir.path(), 0.99, 2);
+        let settings = Settings {
+            loudness_target_lufs: -2,
+            ..Settings::default()
+        };
+        assemble(&wavs, &[], &out, &settings).unwrap();
+        let wav = crate::audio::read_wav(&out.with_extension("wav")).unwrap();
+        let peak = wav.samples.iter().fold(0f32, |m, s| m.max(s.abs()));
+        let ceiling = crate::audio::loudness::db_to_gain(PEAK_CEILING_DBFS) as f32;
+        assert!(peak <= ceiling + 1e-4, "peak {peak}");
+    }
+
+    #[test]
+    fn assemble_keeps_the_level_with_loudness_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let wavs = tone_chunks(dir.path(), 0.05, 1);
+        let out = dir.path().join("out.mp3");
+        let settings = Settings {
+            loudness_target_lufs: 0,
+            ..Settings::default()
+        };
+        assemble(&wavs, &[], &out, &settings).unwrap();
+        let input = crate::audio::read_wav(&wavs[0]).unwrap();
+        let output = crate::audio::read_wav(&out.with_extension("wav")).unwrap();
+        assert_eq!(output.samples, input.samples);
     }
 
     #[test]

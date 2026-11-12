@@ -99,6 +99,14 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   Seed neu. Das geschieht bis zu zweimal; danach bleibt der letzte Versuch erhalten, damit
   kein Text fehlt. Ohne Oberfläche gibt es weiter `text-to-audiobook cleanup` und
   `text-to-audiobook assemble`.
+- **Gleichmäßige Lautstärke** (`LOUDNESS_TARGET_LUFS`, Standard -16, Settings → Audio):
+  beim Zusammenbauen misst das Programm die Lautheit des fertigen Hörbuchs nach EBU R128
+  (Pausen zählen nicht mit) und hebt es als Ganzes auf den Zielwert an. -16 LUFS ist das
+  übliche Niveau für Sprache auf dem Handy und in Podcast-Apps; -14 ist lauter, -18 bis -20
+  leiser. Ein Limiter hält die Spitzen unter -1,5 dBFS, statt sie zu übersteuern. Mit `0`
+  bleibt die Lautstärke, wie sie aus der Sprachausgabe kommt. Bei Kapiteldateien wird jedes
+  Kapitel auf denselben Wert gebracht. Schon erzeugte Audiostücke werden wiederverwendet,
+  „2. Generate Audio“ baut die Datei also schnell neu zusammen.
 - **Neutrale Erzählstimme** im `NARRATOR_PROMPT` und deutscher Text für die automatisch
   erzeugte Referenzstimme.
 
@@ -214,7 +222,8 @@ Projektordner, zum Beispiel:
   "AUTO_CLEANUP": true,
   "USE_LLM": false,
   "SILENCE_AFTER_PARAGRAPH_MS": 1200,
-  "SILENCE_AFTER_PERIOD_MS": 500
+  "SILENCE_AFTER_PERIOD_MS": 500,
+  "LOUDNESS_TARGET_LUFS": -16
 }
 ```
 

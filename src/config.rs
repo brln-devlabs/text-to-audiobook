@@ -87,6 +87,10 @@ pub fn tts_model_id(label: &str) -> String {
         .unwrap_or_else(|| label.to_string())
 }
 
+/// Loudness of the finished audiobook: -16 LUFS is the usual level for
+/// spoken word on phones and in podcast apps.
+pub const DEFAULT_LOUDNESS_TARGET_LUFS: i32 = -16;
+
 /// All user-adjustable settings. Field names map to the upper-case keys of
 /// `settings.json` (`MAX_WORDS_PER_CHUNK`, `TTS_LANGUAGE`, ...).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -98,6 +102,10 @@ pub struct Settings {
     pub crossfade_ms: u32,
     pub silence_after_period_ms: u32,
     pub silence_after_paragraph_ms: u32,
+    /// Integrated loudness of the finished MP3/WAV in LUFS (EBU R128);
+    /// peaks are limited to -1.5 dBFS. 0 (or above) leaves the level as
+    /// synthesized.
+    pub loudness_target_lufs: i32,
     pub llm_max_retries: u32,
     pub log_level_console: String,
     pub log_level_file: String,
@@ -154,6 +162,7 @@ impl Default for Settings {
             crossfade_ms: 80,
             silence_after_period_ms: 500,
             silence_after_paragraph_ms: 1200,
+            loudness_target_lufs: DEFAULT_LOUDNESS_TARGET_LUFS,
             llm_max_retries: 3,
             log_level_console: "INFO".into(),
             log_level_file: "DEBUG".into(),
@@ -187,6 +196,7 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "CROSSFADE_MS",
     "SILENCE_AFTER_PERIOD_MS",
     "SILENCE_AFTER_PARAGRAPH_MS",
+    "LOUDNESS_TARGET_LUFS",
     "LLM_MAX_RETRIES",
     "LOG_LEVEL_CONSOLE",
     "LOG_LEVEL_FILE",
@@ -279,6 +289,10 @@ impl Settings {
             "SILENCE_AFTER_PARAGRAPH_MS" => set(
                 &mut self.silence_after_paragraph_ms,
                 int().and_then(|i| u32::try_from(i).ok()),
+            ),
+            "LOUDNESS_TARGET_LUFS" => set(
+                &mut self.loudness_target_lufs,
+                int().and_then(|i| i32::try_from(i).ok()),
             ),
             "LLM_MAX_RETRIES" => set(
                 &mut self.llm_max_retries,

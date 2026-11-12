@@ -186,6 +186,7 @@ Edit `settings.json` in the project root or use the settings window. Keys and de
 | `CROSSFADE_MS` | 80 | crossfade between chunks |
 | `SILENCE_AFTER_PERIOD_MS` | 500 | pause after a segment |
 | `SILENCE_AFTER_PARAGRAPH_MS` | 1200 | pause after a paragraph |
+| `LOUDNESS_TARGET_LUFS` | -16 | loudness of the finished file (EBU R128, pauses gated out), peaks limited to -1.5 dBFS; `0` = keep the synthesized level |
 | `NORMALIZE_NUMBERS` | false | spell out numbers, dates, times, units, abbreviations (German segments) |
 | `AUTO_CLEANUP` | false | after synthesis audit every chunk, delete failed ones and synthesize them again with another seed (2 rounds, the last attempt is kept) |
 | `REVIEW_NUMBERS` | false | guided review of spots the rules cannot decide (ordinals without clear context, Roman numerals); needs `NORMALIZE_NUMBERS` |
