@@ -103,7 +103,7 @@ fn review_cli(
     cli: &Cli,
 ) -> Result<()> {
     use std::io::{BufRead, Write};
-    use text_to_audiobook::review::{ReviewStore, pending};
+    use text_to_audiobook::review::pending;
     if !cfg.settings.normalize_numbers {
         anyhow::bail!("set NORMALIZE_NUMBERS to true first (settings.json)");
     }
@@ -125,7 +125,12 @@ fn review_cli(
             Err(e) => eprintln!("{name}: could not write texts: {e:#}"),
         };
     for (name, segments) in &segs {
-        let mut store = ReviewStore::load(&cfg.paths.project_cache_dir(name));
+        let mut store = text_to_audiobook::review::load_synced(
+            &cfg.paths.project_cache_dir(name),
+            name,
+            segments,
+            &cfg.settings,
+        );
         let items = pending(name, segments, &cfg.settings, &store);
         if items.is_empty() {
             println!("{name}: nothing to review.");
@@ -189,7 +194,7 @@ fn review_cli(
                 }
             };
             if let Some(rep) = choice {
-                store.set(it.segment, &it.spot, rep);
+                store.decide(it, rep);
                 store.save()?;
             }
         }

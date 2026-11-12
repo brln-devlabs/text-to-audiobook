@@ -395,7 +395,7 @@ impl ReviewSession {
                 _ => replacement.clone(),
             };
             if let Some(store) = self.stores.get_mut(&it.project) {
-                store.set(it.segment, &it.spot, rep);
+                store.decide(it, rep);
                 if !touched.contains(&it.project) {
                     touched.push(it.project.clone());
                 }
@@ -649,7 +649,12 @@ impl App {
             .iter()
             .filter_map(|n| self.segments.get(n).map(|s| (n, s)))
             .map(|(n, s)| {
-                let store = ReviewStore::load(&self.cfg.paths.project_cache_dir(n));
+                let store = review::load_synced(
+                    &self.cfg.paths.project_cache_dir(n),
+                    n,
+                    s,
+                    &self.cfg.settings,
+                );
                 review::pending(n, s, &self.cfg.settings, &store).len()
             })
             .sum()
@@ -682,7 +687,12 @@ impl App {
             let Some(segs) = self.segments.get(n) else {
                 continue;
             };
-            let store = ReviewStore::load(&self.cfg.paths.project_cache_dir(n));
+            let store = review::load_synced(
+                &self.cfg.paths.project_cache_dir(n),
+                n,
+                segs,
+                &self.cfg.settings,
+            );
             all.extend(review::items(n, segs, &self.cfg.settings));
             stores.insert(n.clone(), store);
             texts.insert(

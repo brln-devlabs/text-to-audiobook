@@ -625,7 +625,12 @@ pub fn write_texts(
 ) -> Result<PathBuf> {
     let dir = output_dir.join(project_name).join("text");
     std::fs::create_dir_all(&dir)?;
-    let store = crate::review::ReviewStore::load(&cfg.paths.project_cache_dir(project_name));
+    let store = crate::review::load_synced(
+        &cfg.paths.project_cache_dir(project_name),
+        project_name,
+        segments,
+        &cfg.settings,
+    );
     let render = |spoken: bool| -> String {
         let title = segments
             .first()
@@ -721,7 +726,12 @@ pub fn generate_audio_for_project(
     };
 
     let result = (|| -> Result<Option<PathBuf>> {
-        let store = crate::review::ReviewStore::load(&cfg.paths.project_cache_dir(project_name));
+        let store = crate::review::load_synced(
+            &cfg.paths.project_cache_dir(project_name),
+            project_name,
+            segments,
+            &cfg.settings,
+        );
         if cfg.settings.review_numbers && cfg.settings.normalize_numbers {
             let open = crate::review::pending(project_name, segments, &cfg.settings, &store).len();
             if open > 0 {

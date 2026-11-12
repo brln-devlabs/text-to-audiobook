@@ -83,7 +83,10 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   Lesbar stehen sie in `output/<Textname>/text/review.txt`: jede unsichere Stelle mit ihrem
   Satz, der Entscheidung („OFFEN“, „Program default“, „keep as written“ oder die Auswahl) und
   wie der Ausschnitt gesprochen wird. Die Datei wird beim Vorbereiten, beim Schließen des
-  Prüffensters und nach `text-to-audiobook review` neu geschrieben.
+  Prüffensters und nach `text-to-audiobook review` neu geschrieben. Jede Entscheidung merkt sich
+  ihren Satzausschnitt: Verschieben sich die Abschnittsnummern (anderer Text davor, neue
+  Programmversion), wandert sie mit ihrer Stelle mit. Angewendet wird eine Entscheidung nur
+  auf eine Stelle, die es im aktuellen Text noch gibt.
   Sie gelten für neu erzeugte Audiostücke.
 - **Zwei Knöpfe:** „1. Prepare Segments“ bereitet den Text vor und schreibt ihn nach
   `output/<Textname>/text/prepared.txt`, eine Zeile pro Audiostück mit dessen Nummer
