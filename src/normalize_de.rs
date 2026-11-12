@@ -614,6 +614,20 @@ static ROMAN_AFTER_KEYWORD: LazyLock<Regex> = LazyLock::new(|| {
 static ROMAN_CENTURY: LazyLock<Regex> =
     LazyLock::new(|| re(r"\b([IVXLC]+)\.(\s+)(Jahrhundert\p{L}*|Jh\.)"));
 static NUMERIC_DATE: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b"));
+/// English dates in headers and bylines: "Nov 7, 2026", "September 11, 2023".
+static ENGLISH_DATE: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept|Sep|Oct|Nov|Dec)\.?\s+(\d{1,2}),\s+(\d{4})\b",
+    )
+});
+/// Month index (0-based) of an English month name or abbreviation.
+fn english_month(name: &str) -> Option<usize> {
+    const ABBR: [&str; 12] = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ];
+    let key = name.get(..3)?.to_ascii_lowercase();
+    ABBR.iter().position(|m| *m == key)
+}
 static DAY_MONTH: LazyLock<Regex> = LazyLock::new(|| {
     re(
         r"\b(\d{1,2})\.\s+(Januar|Jänner|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\b",
@@ -772,6 +786,17 @@ pub fn normalize(text: &str) -> String {
         let ending = ordinal_ending(p1.as_deref(), p2.as_deref())?;
         Some(format!("{}{}{}", ordinal(v, ending), &c[2], &c[3]))
     });
+
+    // Nov 7, 2026 -> 7. November 2026, then read like a German date below
+    s = ENGLISH_DATE
+        .replace_all(&s, |c: &Captures| {
+            let day: u64 = c[2].parse().unwrap_or(0);
+            match english_month(&c[1]) {
+                Some(m) if (1..=31).contains(&day) => format!("{day}. {} {}", MONTHS[m], &c[3]),
+                _ => c[0].to_string(),
+            }
+        })
+        .into_owned();
 
     // 03.05.1995 -> dritter Mai neunzehnhundertfünfundneunzig
     let t = s.clone();
@@ -994,6 +1019,30 @@ mod tests {
         assert_eq!(ordinal(31, "en"), "einunddreißigsten");
         assert_eq!(ordinal(100, "e"), "hundertste");
         assert_eq!(ordinal(103, "e"), "hundertdritte");
+    }
+
+    #[test]
+    fn english_dates() {
+        let cases = [
+            (
+                "Nov 7, 2026 · @name",
+                "siebter November zweitausendsechsundzwanzig · @name",
+            ),
+            (
+                "am Sept. 11, 2001",
+                "am elften September zweitausendeins",
+            ),
+            (
+                "Stand: March 3, 1995.",
+                "Stand: dritter März neunzehnhundertfünfundneunzig.",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize(input), expected, "{input}");
+        }
+        // Not a date: day out of range, or no comma before the year.
+        assert!(normalize("Nov 42, 2026").starts_with("Nov "));
+        assert!(normalize("Jan 2026").starts_with("Jan "));
     }
 
     #[test]
