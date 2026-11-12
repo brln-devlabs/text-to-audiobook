@@ -125,7 +125,7 @@ Select the input and output directories, tick the stories and run the stages (th
 
 The audit and the assembly without TTS remain available on the command line (`cleanup`, `assemble`).
 
-The app icon lives in [`assets/`](assets/) and is set for the window, task bar and Dock; on Windows it is also embedded in the `.exe` (`build.rs`). Wayland task bars take it from a desktop entry: see [`assets/text-to-audiobook.desktop`](assets/text-to-audiobook.desktop) and [FORK_DE.md](FORK_DE.md#programm-icon).
+The app icon lives in [`assets/`](assets/) and is set for the window, task bar and Dock; on Windows it is also embedded in the `.exe` (`build.rs`). GNOME and KDE take it from a desktop entry (Wayland has no window icons), which the GUI writes on start to `~/.local/share/applications/text-to-audiobook.desktop`; it launches the binary in the current project folder. An own entry of that name without the line `X-TextToAudiobook-Managed=true` is left untouched.
 
 ### Command line
 
@@ -232,6 +232,7 @@ cargo clippy --all-targets
 | `audio` | WAV I/O, Butterworth filters, assembler (WAV + MP3), quality audit, MFCC |
 | `pipeline` | stages 1–4, project discovery, chapter assembly |
 | `gui`, `main` | egui desktop app and CLI |
+| `desktop_entry` | Linux: desktop entry and icon, so GNOME/KDE show the app icon |
 
 ### Stage 1: Text preparation
 1. Discover projects → order files → clean Markdown → split into paragraph-aligned chunks

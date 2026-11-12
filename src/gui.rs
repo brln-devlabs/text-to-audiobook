@@ -47,11 +47,15 @@ const GREEN: Color32 = Color32::from_rgb(0x2a, 0x6a, 0x2a);
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon-256.png");
 /// The same icon, small, for the title row.
 const LOGO_PNG: &[u8] = include_bytes!("../assets/icon-64.png");
-/// Matches `assets/text-to-audiobook.desktop` (Wayland shows the icon from there).
-const APP_ID: &str = "text-to-audiobook";
+/// Window app ID (Wayland) / WM_CLASS (X11). Linux desktops take the icon
+/// from the `.desktop` file of the same name (see `desktop_entry`).
+pub const APP_ID: &str = "text-to-audiobook";
 
 /// Start the GUI (blocks until the window is closed).
 pub fn launch(cfg: Config, input_dir: PathBuf, output_dir: PathBuf) -> Result<()> {
+    // Before the window opens, so the shell already knows the entry.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    crate::desktop_entry::install_for_current_user(&cfg.paths.root, ICON_PNG);
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("AI TTS Pipeline")
         .with_app_id(APP_ID)

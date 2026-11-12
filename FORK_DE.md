@@ -180,17 +180,15 @@ Kommandozeile, etwa `run`, `prepare` oder `generate`.
 ### Programm-Icon
 
 Fenster, Taskleiste und Dock zeigen das Icon aus `assets/` (aufgeschlagenes Buch mit
-Schallwelle); unter Windows steckt es auch in der `.exe`. Unter Linux mit Wayland zeigt die
-Taskleiste es erst mit einem Startmenü-Eintrag:
+Schallwelle); unter Windows steckt es auch in der `.exe`.
 
-```bash
-mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/scalable/apps
-cp assets/icon.svg ~/.local/share/icons/hicolor/scalable/apps/text-to-audiobook.svg
-cp assets/text-to-audiobook.desktop ~/.local/share/applications/
-```
-
-In der kopierten `text-to-audiobook.desktop` dann `Exec=` auf das Programm und `Path=` auf
-den Projektordner setzen.
+Unter Linux holen sich GNOME und KDE das Icon aus einem Startmenü-Eintrag (bei Wayland gibt
+es kein Fenster-Icon). Den legt die Oberfläche beim Start selbst an:
+`~/.local/share/applications/text-to-audiobook.desktop` und das Icon unter
+`~/.local/share/icons/hicolor/256x256/apps/`. Der Eintrag startet das zuletzt benutzte
+Programm im zuletzt benutzten Projektordner. Beim allerersten Start kann GNOME noch das
+Standard-Icon zeigen, ab dem nächsten Start passt es. Einen eigenen Eintrag unter diesem
+Namen (ohne die Zeile `X-TextToAudiobook-Managed=true`) lässt das Programm unverändert.
 
 ## Modelle
 
