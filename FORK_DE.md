@@ -43,7 +43,8 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   Für Fachtexte: Abschnittsnummern („Abschnitt 3.3“ → „drei Punkt drei“, „Anhang B.1“ →
   „B Punkt eins“; „Anhang C“ bleibt ein Buchstabe), Modellgrößen („1.3B“ → „eins Komma drei
   Milliarden“, „125M“), GB/MB/TB, Versionen („SQuAD2.0“ → „zwei Punkt null“), arXiv-Nummern
-  Ziffer für Ziffer, Hochzahlen („10²“ → „zehn hoch zwei“) und Rechenzeichen (=, <, >, ≤, ≥,
+  Ziffer für Ziffer, Literaturangaben („33:1877–1901“ → „Band dreiunddreißig, Seiten …“;
+  Seitenzahlen nie als Jahreszahl), Hochzahlen („10²“ → „zehn hoch zwei“) und Rechenzeichen (=, <, >, ≤, ≥,
   ≈, ∈, ×, ^).
 - **Textbereinigung** (immer): Markdown-Escapes („\*“, „\_“, „\[“) werden zum Zeichen,
   Fußnotenzeichen („Carlini¹“, „¹ Google Research“, „\*“) entfallen, Tabellen werden Zeile
@@ -56,7 +57,7 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   (etwa „The Beginning“), werden verworfen.
 - **Geänderter Text wird erkannt:** Ändert sich der vorbereitete Text (neue Programmversion,
   bearbeitete Eingabe), verwirft Stufe 1 die betroffenen Einträge im Cache, statt sie nach
-  ihrer Nummer weiterzuverwenden; „Clear Cache“ ist dafür nicht mehr nötig. Neben jedem
+  ihrer Nummer weiterzuverwenden (ein Eintrag gilt nur bei genau gleichem Text); „Clear Cache“ ist dafür nicht mehr nötig. Neben jedem
   Audiostück liegt `chunk_NNNNNN.txt` mit dem gesprochenen Text. Passt er nicht mehr (anderer
   Text, andere Prüfentscheidung), erzeugt Stufe 2 das Stück neu.
 - **Unsichere Zahlen prüfen** (`REVIEW_NUMBERS = true`, zusätzlich zu `NORMALIZE_NUMBERS`):

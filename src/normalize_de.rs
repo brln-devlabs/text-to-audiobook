@@ -509,6 +509,12 @@ static PLUS: LazyLock<Regex> = LazyLock::new(|| re(r"\s\+\s"));
 static LONE_PERCENT: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[\s(])%"));
 /// "0,53–0,59" -> "0,53 bis 0,59"
 static DECIMAL_RANGE: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\d+,\d+)\s?[–-]\s?(\d+,\d+)\b"));
+/// Journal references "33:1877–1901", "13(7):422–426": volume, issue, pages.
+static JOURNAL: LazyLock<Regex> =
+    LazyLock::new(|| re(r"\b(\d{1,4})(?:\((\d{1,4})\))?:(\d{1,6})\s?[–-]\s?(\d{1,6})\b"));
+/// Page numbers are cardinals, never years ("Seite 1173").
+static PAGE_NUMBERS: LazyLock<Regex> =
+    LazyLock::new(|| re(r"\b(Seiten?)\s+(\d{1,6})(?:\s?[–-]\s?(\d{1,6}))?\b"));
 static MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| re(r"[ \t]{2,}"));
 static DAY_RANGE: LazyLock<Regex> = LazyLock::new(|| {
     re(
@@ -677,6 +683,27 @@ pub fn normalize(text: &str) -> String {
     }
     s = PAGE.replace_all(&s, "Seite $1").into_owned();
     s = PAGES.replace_all(&s, "Seiten $1").into_owned();
+
+    // Communications of the ACM, 13(7):422–426 -> Band dreizehn, Heft sieben, Seiten …
+    s = JOURNAL
+        .replace_all(&s, |c: &Captures| {
+            let n = |i: usize| cardinal(c[i].parse().unwrap_or(0));
+            let issue = c
+                .get(2)
+                .map(|m| format!(" Heft {},", cardinal(m.as_str().parse().unwrap_or(0))))
+                .unwrap_or_default();
+            format!("Band {},{issue} Seiten {} bis {}", n(1), n(3), n(4))
+        })
+        .into_owned();
+    s = PAGE_NUMBERS
+        .replace_all(&s, |c: &Captures| {
+            let n = |m: &str| cardinal(m.parse().unwrap_or(0));
+            match c.get(3) {
+                Some(to) => format!("{} {} bis {}", &c[1], n(&c[2]), n(to.as_str())),
+                None => format!("{} {}", &c[1], n(&c[2])),
+            }
+        })
+        .into_owned();
 
     // arXiv:2108.01624 -> arXiv zwei eins null acht Punkt null eins sechs zwei vier
     s = ARXIV
@@ -1081,6 +1108,18 @@ mod tests {
                 "Seiten achtundzwanzig bis dreiundfünfzig, elfter bis fünfzehnter September zweitausenddreiundzwanzig.",
             ),
             ("pp. 28–53", "Seiten achtundzwanzig bis dreiundfünfzig"),
+            (
+                "EMNLP 2020, pp. 1173–1186.",
+                "EMNLP zweitausendzwanzig, Seiten tausendeinhundertdreiundsiebzig bis tausendeinhundertsechsundachtzig.",
+            ),
+            (
+                "Communications of the ACM, 13(7):422–426.",
+                "Communications of the ACM, Band dreizehn, Heft sieben, Seiten vierhundertzweiundzwanzig bis vierhundertsechsundzwanzig.",
+            ),
+            (
+                "Systems, 33:1877–1901.",
+                "Systems, Band dreiunddreißig, Seiten tausendachthundertsiebenundsiebzig bis tausendneunhunderteins.",
+            ),
             (
                 "Seite 997–1005.",
                 "Seite neunhundertsiebenundneunzig bis tausendfünf.",
