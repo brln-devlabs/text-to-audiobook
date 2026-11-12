@@ -1,5 +1,11 @@
 name: Build and Release
 
+# Installation packages for people without a build environment:
+#   Windows: setup.exe (Inno Setup) and a portable ZIP
+#   Linux:   AppImage (any distribution) and .deb (Debian, Ubuntu, Mint)
+#   macOS:   plain binary (as before)
+# All CPU builds; the speech model is downloaded by the program on first use.
+
 on:
   push:
     tags:
@@ -13,25 +19,157 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            binary: text-to-audiobook
-            asset_name: text-to-audiobook-linux
-            features: --features llm
-          - os: windows-latest
-            binary: text-to-audiobook.exe
-            asset_name: text-to-audiobook-windows.exe
-            features: --features llm
-          - os: macos-latest
-            binary: text-to-audiobook
-            asset_name: text-to-audiobook-macos
-            features: --features metal
+  linux:
+    # The oldest supported Ubuntu: the binary needs the glibc it was built
+    # against or newer (22.04: glibc 2.35, also Debian 12, Mint 21).
+    runs-on: ubuntu-22.04
 
-    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake perl libxkbcommon-x11-0 libxcb-xkb1 desktop-file-utils
+
+      - name: Build release binary
+        run: cargo build --release --locked --features llm
+
+      - name: Check run-time dependencies
+        run: |
+          bin=target/release/text-to-audiobook
+          readelf -d "$bin" | grep NEEDED
+          # Only libraries every Linux has may be linked dynamically.
+          if readelf -d "$bin" | grep NEEDED \
+              | grep -vE '\[(libc|libm|libgcc_s|libstdc\+\+|ld-linux-x86-64)\.so'; then
+            echo "::error::unexpected shared library dependency"
+            exit 1
+          fi
+          objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -V -u | tail -1
+
+      - name: Dry run
+        run: |
+          mkdir -p demo/input
+          printf 'Ein kurzer Text. Mit zwei Sätzen.\n\nNeuer Absatz.\n' > demo/input/Probe.md
+          target/release/text-to-audiobook --root demo --mock-models run
+          test -s demo/output/Probe/final/audiobook.mp3
+
+      - name: Version
+        id: version
+        run: echo "version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')" >> "$GITHUB_OUTPUT"
+
+      - name: Debian package
+        run: |
+          cargo install cargo-deb --locked
+          desktop-file-validate packaging/linux/text-to-audiobook.desktop
+          mkdir -p dist
+          cargo deb --no-build --no-strip --output dist/
+          dpkg-deb --info dist/*.deb
+
+      - name: AppImage
+        run: |
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          APPIMAGETOOL="$PWD/appimagetool" packaging/linux/build-appimage.sh \
+            target/release/text-to-audiobook "${{ steps.version.outputs.version }}" dist
+          chmod +x dist/*.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/*.AppImage --version
+
+      - name: Plain binary
+        run: cp target/release/text-to-audiobook dist/text-to-audiobook-linux
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # Static C runtime (.cargo/config.toml), so no Visual C++
+      # Redistributable is needed on the target PC.
+      - name: Build release binaries
+        run: cargo build --release --locked --features llm,console-wrapper
+
+      - name: Collect files
+        shell: bash
+        run: |
+          mkdir -p dist/windows
+          cp target/release/text-to-audiobook.exe dist/windows/
+          cp target/release/text-to-audiobook-console.exe dist/windows/text-to-audiobook.com
+
+      - name: Check run-time dependencies
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $deps = & $dumpbin.FullName /nologo /dependents dist\windows\text-to-audiobook.exe
+          $deps
+          $bad = $deps | Select-String -Pattern '(?i)(vcruntime|msvcp|vcomp|libssl|libcrypto)\S*\.dll'
+          if ($bad) {
+            Write-Error "unexpected DLL dependency: $bad"
+            exit 1
+          }
+
+      - name: Dry run through the console front end
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force demo\input | Out-Null
+          Set-Content -Encoding utf8 demo\input\Probe.md "Ein kurzer Text. Mit zwei Sätzen.`n`nNeuer Absatz."
+          dist\windows\text-to-audiobook.com --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          dist\windows\text-to-audiobook.com --root demo --mock-models run
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (-not (Test-Path demo\output\Probe\final\audiobook.mp3)) { Write-Error "no audiobook"; exit 1 }
+          # Errors must come back as exit code
+          dist\windows\text-to-audiobook.com --no-such-option
+          if ($LASTEXITCODE -eq 0) { Write-Error "exit code lost"; exit 1 }
+          exit 0
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y | Out-Null
+          }
+          & $iscc "/DAppVersion=$version" packaging\windows\text-to-audiobook.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Compress-Archive -Path dist\windows\*, LICENSE, docs\LICENSES_NOTICES.md `
+            -DestinationPath "dist\text-to-audiobook-$version-windows-portable.zip"
+          Remove-Item -Recurse dist\windows
+          Get-ChildItem dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -43,19 +181,18 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
-        run: cargo build --release --locked ${{ matrix.features }}
+        run: cargo build --release --locked --features metal
 
       - name: Rename binary
-        shell: bash
         run: |
           mkdir -p dist
-          cp "target/release/${{ matrix.binary }}" "dist/${{ matrix.asset_name }}"
+          cp target/release/text-to-audiobook dist/text-to-audiobook-macos
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset_name }}
-          path: dist/${{ matrix.asset_name }}
+          name: macos
+          path: dist/*
 
   test:
     runs-on: ubuntu-latest
@@ -73,9 +210,15 @@ jobs:
         run: cargo test --locked --features llm
 
   create-release:
-    needs: [build, test]
+    needs: [linux, windows, macos, test]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Without a macOS runner (the job then waits and is cancelled) the
+    # release still comes out, just without the macOS binary.
+    if: >-
+      always() && startsWith(github.ref, 'refs/tags/v')
+      && needs.linux.result == 'success'
+      && needs.windows.result == 'success'
+      && needs.test.result == 'success'
 
     steps:
       - uses: actions/checkout@v4
@@ -91,18 +234,34 @@ jobs:
         with:
           files: dist/*
           body: |
-            # text-to-audiobook Release
+            # text-to-audiobook ${{ github.ref_name }}
 
-            Pre-built binaries for Windows, Linux and macOS (CPU builds; macOS with Metal).
-            For NVIDIA GPUs build from source with `cargo build --release --features cuda,llm`.
+            ## Installation
 
-            ## Download
+            **Windows 10/11:** `text-to-audiobook-…-windows-setup.exe` herunterladen und doppelklicken.
+            Administratorrechte sind nicht nötig. Weil das Programm nicht signiert ist, warnt Windows
+            beim ersten Mal („Der Computer wurde durch Windows geschützt“): auf „Weitere Informationen“
+            und dann „Trotzdem ausführen“ klicken. Ohne Installation: die `…-windows-portable.zip`
+            entpacken und `text-to-audiobook.exe` starten.
 
-            - **Windows**: `text-to-audiobook-windows.exe`
-            - **Linux**: `text-to-audiobook-linux` - make it executable with `chmod +x`
-            - **macOS**: `text-to-audiobook-macos` - make it executable with `chmod +x`
+            **Ubuntu, Debian, Linux Mint:** die `.deb`-Datei herunterladen und doppelklicken (oder
+            `sudo apt install ./text-to-audiobook_…_amd64.deb`). Danach steht das Programm im Startmenü.
 
-            ## Notes
+            **Andere Linux-Systeme:** die `.AppImage` herunterladen, in den Dateieigenschaften
+            „Als Programm ausführen“ erlauben (oder `chmod +x`), dann doppelklicken.
 
-            - The first run downloads the models (Llama 3.2 1B and Qwen3-TTS)
-            - See [README.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/README.md) for details
+            **macOS:** `text-to-audiobook-macos` (ausführbar machen mit `chmod +x`).
+
+            Beim ersten Start bietet das Programm an, das Sprachmodell herunterzuladen (einmalig,
+            mehrere GB). Texte, Hörbücher und Einstellungen liegen in `Dokumente/text-to-audiobook`.
+
+            Alle Pakete rechnen auf dem Prozessor (CPU). Für NVIDIA-Grafikkarten aus dem Quelltext
+            bauen: `cargo build --release --features cuda`.
+
+            ## Installation (English)
+
+            Windows: run the `setup.exe` (unsigned: "More info" → "Run anyway"). Ubuntu/Debian/Mint:
+            open the `.deb`. Other Linux: make the `.AppImage` executable and start it. The program
+            offers to download the speech model on first start; data lives in
+            `Documents/text-to-audiobook`. See
+            [README.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/README.md).

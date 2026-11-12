@@ -146,10 +146,46 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   die Oberfläche in `cache/project_selection.json`, auch über einen Neustart hinweg. Neu
   hinzugekommene Texte sind angehakt.
 
-## Installation
+## Installation ohne Programmierkenntnisse
+
+Unter [Releases](https://github.com/brln-devlabs/text-to-audiobook/releases) liegen fertige
+Pakete. Sie bringen alles mit, was das Programm braucht; Rust, Python, ffmpeg oder die
+Visual-C++-Laufzeit müssen nicht installiert werden.
+
+- **Windows 10/11:** `text-to-audiobook-<Version>-windows-setup.exe` herunterladen und
+  doppelklicken. Administratorrechte sind nicht nötig, das Programm landet in
+  `%LOCALAPPDATA%\Programs` und im Startmenü. Weil der Installer nicht signiert ist, warnt
+  Windows beim ersten Mal („Der Computer wurde durch Windows geschützt“): auf „Weitere
+  Informationen“ und dann „Trotzdem ausführen“ klicken. Wer nichts installieren möchte,
+  entpackt `…-windows-portable.zip` und startet `text-to-audiobook.exe`.
+- **Ubuntu, Debian, Linux Mint:** `text-to-audiobook_<Version>-1_amd64.deb` herunterladen und
+  doppelklicken (Software-Center) oder `sudo apt install ./text-to-audiobook_*.deb`. Danach
+  steht das Programm im Startmenü.
+- **Andere Linux-Systeme:** `text-to-audiobook-<Version>-x86_64.AppImage` herunterladen, mit
+  Rechtsklick → Eigenschaften „Als Programm ausführen“ erlauben (oder `chmod +x`) und
+  doppelklicken. Ab dem ersten Start steht es auch im Startmenü. Startet sie nicht und es ist
+  von „FUSE“ die Rede: `sudo apt install fuse3` oder mit `--appimage-extract-and-run` starten.
+
+Beim ersten Start fragt das Programm, ob es das Sprachmodell herunterladen soll (einmalig,
+mehrere GB, mit Fortschrittsanzeige). Ein abgebrochener Download geht beim nächsten Mal dort
+weiter, wo er stehen geblieben ist. Texte, Hörbücher und Einstellungen liegen in
+`Dokumente/text-to-audiobook`; „Open“ neben „Input Directory“ öffnet den Ordner, in den die
+Texte (`.md`) kommen. Die Pakete rechnen auf dem Prozessor; für NVIDIA-Grafikkarten das
+Programm wie unten beschrieben selbst bauen.
+
+Was in den Paketen steckt: OpenSSL (Linux) und die C/C++-Laufzeit (Windows) sind fest
+eingebaut, llama.cpp ist ohne OpenMP gebaut. Unter Linux braucht das Programm nur, was zu
+jedem Desktop gehört (libc, libstdc++, X11/Wayland, `libxkbcommon`, Grafiktreiber); das
+`.deb` zieht `libxkbcommon-x11-0` nach, die AppImage hat eine Ersatzkopie dabei. Gebaut wird
+unter Ubuntu 22.04, damit es auch auf älteren Systemen läuft (glibc ab 2.35). Wie die
+Pakete entstehen, steht im README unter „Installation packages“ und in
+`.github/workflows/build-and-release.yml`.
+
+## Installation aus dem Quelltext
 
 Benötigt werden [Rust](https://rustup.rs/) ab Version 1.95, CMake und ein C/C++-Compiler
-(llama.cpp, der MP3-Encoder LAME und SQLite werden mitgebaut).
+(llama.cpp, der MP3-Encoder LAME und SQLite werden mitgebaut), unter Linux außerdem Perl und
+make (OpenSSL wird mitgebaut).
 
 Unter Ubuntu/Debian zum Beispiel:
 
@@ -190,14 +226,19 @@ nvidia-smi
 ```
 
 Danach liegt das Programm unter `target/release/text-to-audiobook`. Gestartet wird es im
-Projektordner (dort liegen `settings.json`, `input/`, `output/`, `cache/`):
+Projektordner (dort liegen `settings.json`, `input/`, `output/`, `cache/`). Ein Ordner gilt
+als Projektordner, wenn er `settings.json` oder `input/` enthält. Wird das Programm woanders
+gestartet (etwa aus dem Startmenü), nimmt es `Dokumente/text-to-audiobook`; `TTA_ROOT` oder
+`--root` legen den Ordner fest:
 
 ```bash
 ./target/release/text-to-audiobook
 ```
 
 Ohne Befehl öffnet sich die Oberfläche. `text-to-audiobook --help` zeigt die Befehle für die
-Kommandozeile, etwa `run`, `prepare` oder `generate`.
+Kommandozeile, etwa `run`, `prepare` oder `generate`. Unter Windows öffnet die Oberfläche kein
+schwarzes Konsolenfenster mehr; in der Eingabeaufforderung läuft `text-to-audiobook run`
+über das danebenliegende `text-to-audiobook.com`, das Ein- und Ausgabe durchreicht.
 
 ### Programm-Icon
 
@@ -214,7 +255,10 @@ Namen (ohne die Zeile `X-TextToAudiobook-Managed=true`) lässt das Programm unve
 
 ## Modelle
 
-Beim ersten Start lädt das Programm die Modelle herunter:
+Die Oberfläche fragt beim ersten Start und vor jedem Schritt, der ein noch fehlendes Modell
+braucht (etwa nach dem Wechsel auf 1.7B oder „From description“), ob sie es herunterladen
+soll, und zeigt den Fortschritt. Ein abgebrochener Download wird fortgesetzt. Auf der
+Kommandozeile lädt das Programm die Modelle bei Bedarf selbst:
 
 - Llama 3.2 1B (GGUF, etwa 800 MB) nach `models/`, nur mit `USE_LLM = true`
 - Qwen3-TTS (0.6B oder 1.7B) in den Hugging-Face-Zwischenspeicher

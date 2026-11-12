@@ -8,9 +8,41 @@ license = "AGPL-3.0-or-later"
 readme = "README.md"
 default-run = "text-to-audiobook"
 
+# Debian/Ubuntu package: cargo deb --no-build (after cargo build --release)
+[package.metadata.deb]
+maintainer = "brln-devlabs <https://github.com/brln-devlabs/text-to-audiobook/issues>"
+copyright = "text-to-audiobook contributors"
+license-file = ["LICENSE", "0"]
+section = "sound"
+priority = "optional"
+extended-description = """\
+Turns Markdown texts into audiobooks with the Qwen3-TTS speech model, with
+German text preparation (numbers, abbreviations, headings). Desktop GUI and
+command line. The speech model (several GB) is downloaded on first use."""
+# $auto: libc, libstdc++ and libgcc from the binary. The GUI loads
+# libxkbcommon-x11 at run time, so dpkg cannot see it.
+depends = "$auto, libxkbcommon-x11-0, ca-certificates"
+recommends = "xdg-desktop-portal"
+assets = [
+    ["target/release/text-to-audiobook", "usr/bin/", "755"],
+    ["packaging/linux/text-to-audiobook.desktop", "usr/share/applications/", "644"],
+    ["assets/icon-256.png", "usr/share/icons/hicolor/256x256/apps/text-to-audiobook.png", "644"],
+    ["assets/icon.svg", "usr/share/icons/hicolor/scalable/apps/text-to-audiobook.svg", "644"],
+    ["README.md", "usr/share/doc/text-to-audiobook/", "644"],
+    ["FORK_DE.md", "usr/share/doc/text-to-audiobook/", "644"],
+    ["docs/LICENSES_NOTICES.md", "usr/share/doc/text-to-audiobook/", "644"],
+]
+
 [[bin]]
 name = "text-to-audiobook"
 path = "src/main.rs"
+
+# Windows: console front end, shipped as text-to-audiobook.com next to the
+# GUI program (see src/bin/console.rs)
+[[bin]]
+name = "text-to-audiobook-console"
+path = "src/bin/console.rs"
+required-features = ["console-wrapper"]
 
 [features]
 default = ["gui", "tts"]
@@ -20,7 +52,7 @@ gui = ["dep:eframe", "dep:rfd"]
 # USE_LLM = true geladen
 llm = ["dep:llama-cpp-2"]
 # Qwen3-TTS über Candle
-tts = ["dep:qwen_tts", "dep:candle-core"]
+tts = ["dep:qwen_tts", "dep:candle-core", "dep:openssl"]
 # NVIDIA-GPU für die Sprachausgabe (CUDA-Toolkit mit nvcc nötig)
 cuda = ["tts", "qwen_tts/cuda", "candle-core/cuda"]
 # Zusätzlich Llama auf der NVIDIA-GPU (nur sinnvoll mit LLM_GPU_LAYERS != 0).
@@ -29,11 +61,14 @@ cuda = ["tts", "qwen_tts/cuda", "candle-core/cuda"]
 llm-cuda = ["llm", "cuda", "llama-cpp-2/cuda"]
 # Apple-GPU
 metal = ["llm", "tts", "llama-cpp-2/metal", "qwen_tts/metal", "candle-core/metal"]
+# Builds text-to-audiobook-console (Windows installer: text-to-audiobook.com)
+console-wrapper = []
 
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.5", features = ["derive"] }
+dirs = "6"
 hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
 hound = "3.5"
 id3 = "1.16"
@@ -51,13 +86,33 @@ ureq = { version = "2.10", default-features = false, features = ["tls", "native-
 eframe = { version = "0.37", optional = true }
 rfd = { version = "0.17", optional = true }
 
-llama-cpp-2 = { version = "=0.1.160", optional = true }
+# ohne OpenMP (ggml nimmt dann seinen eigenen Threadpool): keine libgomp bzw.
+# vcomp140.dll, die auf dem Zielrechner fehlen könnten
+llama-cpp-2 = { version = "=0.1.160", optional = true, default-features = false, features = [
+    "common",
+] }
 
 candle-core = { version = "0.9", optional = true }
 qwen_tts = { version = "0.1.1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+# qwen_tts lädt über hf-hub/native-tls OpenSSL. Unter Linux wird es fest
+# eingebaut (aus dem Quelltext, braucht perl beim Bauen), damit das Programm
+# nicht von der libssl-Version des Zielsystems abhängt.
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10", optional = true, features = ["vendored"] }
+
+[target.'cfg(windows)'.dependencies]
+# kein Konsolenfenster für die GUI (src/main.rs, src/bin/console.rs)
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 # Icon und Versionsinfo in die .exe einbetten (build.rs)
 [target.'cfg(windows)'.build-dependencies]

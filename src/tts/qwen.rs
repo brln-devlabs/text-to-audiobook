@@ -51,10 +51,15 @@ pub struct QwenBackend {
 fn pick_device() -> Device {
     #[cfg(feature = "cuda")]
     {
-        match Device::cuda_if_available(0) {
-            Ok(d) if d.is_cuda() => return d,
-            Ok(_) => {}
-            Err(e) => log::warn!("CUDA not usable: {e}"),
+        // cudarc loads the CUDA libraries at run time and panics if they are
+        // missing (no NVIDIA driver): then the CPU it is.
+        match std::panic::catch_unwind(|| Device::cuda_if_available(0)) {
+            Ok(Ok(d)) if d.is_cuda() => return d,
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => log::warn!("CUDA not usable: {e}"),
+            Err(_) => {
+                log::warn!("CUDA not usable (driver or CUDA libraries missing), using the CPU")
+            }
         }
     }
     #[cfg(feature = "metal")]

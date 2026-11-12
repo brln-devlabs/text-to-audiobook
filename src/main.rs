@@ -13,6 +13,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+// The GUI build is a Windows program, not a console program, so starting it
+// from Explorer or the start menu opens no console window. Commands typed in
+// a console go through `text-to-audiobook.com` (src/bin/console.rs).
+#![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -30,7 +35,8 @@ use text_to_audiobook::{logging, pipeline::no_progress};
 #[command(version, about)]
 struct Cli {
     /// Project root with settings.json, input/, output/, cache/, logs/, models/
-    /// (default: $TTA_ROOT or the current directory)
+    /// (default: $TTA_ROOT, else the current directory if it has settings.json
+    /// or input/, else Documents/text-to-audiobook)
     #[arg(long, global = true)]
     root: Option<PathBuf>,
 
@@ -334,7 +340,11 @@ fn run(cli: Cli) -> Result<()> {
 }
 
 fn main() -> ExitCode {
+    #[cfg(all(windows, feature = "gui"))]
+    let has_console = windows_console::attach_to_parent();
     let cli = Cli::parse();
+    #[cfg(all(windows, feature = "gui"))]
+    let is_gui = matches!(cli.command, None | Some(Command::Gui));
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -343,7 +353,41 @@ fn main() -> ExitCode {
             } else {
                 log::error!("{e:#}");
             }
+            // Started by a double click: nobody sees stderr.
+            #[cfg(all(windows, feature = "gui"))]
+            if is_gui && !has_console {
+                rfd::MessageDialog::new()
+                    .set_level(rfd::MessageLevel::Error)
+                    .set_title("text-to-audiobook")
+                    .set_description(format!("The program could not start:\n\n{e:#}"))
+                    .show();
+            }
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// Output for commands when the Windows GUI build is started from a console
+/// directly (`text-to-audiobook.exe run`) instead of through the
+/// `text-to-audiobook.com` front end.
+#[cfg(all(windows, feature = "gui"))]
+mod windows_console {
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    /// True if output can be seen: it is redirected (pipe, file, the `.com`
+    /// front end) or the console of the parent process could be attached.
+    pub fn attach_to_parent() -> bool {
+        unsafe {
+            let redirected = |h| {
+                let h = GetStdHandle(h);
+                !h.is_null() && h != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+            };
+            if redirected(STD_OUTPUT_HANDLE) || redirected(STD_ERROR_HANDLE) {
+                return true;
+            }
+            AttachConsole(ATTACH_PARENT_PROCESS) != 0
         }
     }
 }

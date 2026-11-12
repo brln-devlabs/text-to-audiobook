@@ -61,12 +61,46 @@ All settings, stored in `settings.json`.
 
 ### Build requirements
 
+Only needed to build from source; the [installation packages](#installation-packages) need none of this.
+
 - Rust 1.95 or newer ([rustup](https://rustup.rs/))
 - CMake and a C/C++ compiler (llama.cpp, LAME and SQLite are compiled from source)
+- Linux: Perl and make (OpenSSL is compiled in, so the binary does not depend on the system's libssl)
 - For `--features cuda`: CUDA toolkit (nvcc) matching your driver
 - Linux GUI at runtime: X11 or Wayland with `libxkbcommon` and OpenGL/Vulkan drivers (no GTK needed)
 
 ## Installation
+
+### Installation packages
+
+The [releases](https://github.com/brln-devlabs/text-to-audiobook/releases) have ready-made packages that need nothing else installed (no Rust, Python, ffmpeg or Visual C++ runtime):
+
+| System | File | Install |
+|---|---|---|
+| Windows 10/11 | `text-to-audiobook-<version>-windows-setup.exe` | double-click; no administrator rights needed (installs to `%LOCALAPPDATA%\Programs`). The installer is not signed: SmartScreen asks once, "More info" → "Run anyway" |
+| Windows, without installing | `text-to-audiobook-<version>-windows-portable.zip` | unpack, start `text-to-audiobook.exe` |
+| Ubuntu, Debian, Linux Mint | `text-to-audiobook_<version>-1_amd64.deb` | double-click (software centre) or `sudo apt install ./text-to-audiobook_*.deb`; adds a start menu entry |
+| other Linux (glibc 2.35+) | `text-to-audiobook-<version>-x86_64.AppImage` | allow "run as program" in the file properties (or `chmod +x`), double-click. The start menu entry is added on the first start |
+| macOS | `text-to-audiobook-macos` | `chmod +x`, start in a terminal |
+
+All packages compute on the CPU (macOS: Metal). The first start offers to download the speech model (once, several GB, see [Models](#hugging-face-token-optional)); texts, audiobooks and settings go to `Documents/text-to-audiobook` (see [Usage](#usage)).
+
+What the packages contain, and what not:
+
+- OpenSSL (Linux) and the C/C++ runtime (Windows) are linked statically; llama.cpp is built without OpenMP. Linux needs only libc, libstdc++ and the usual desktop libraries (X11/Wayland, `libxkbcommon`, EGL/Vulkan drivers); the `.deb` pulls in `libxkbcommon-x11-0`, the AppImage carries a copy for systems without it.
+- Not included: the models (downloaded on first use) and GPU support. For NVIDIA GPUs build from source with `--features cuda`.
+
+Building the packages yourself (the release workflow does the same):
+
+```bash
+cargo build --release --locked --features llm
+cargo deb --no-build --no-strip --output dist/                       # needs cargo-deb
+packaging/linux/build-appimage.sh target/release/text-to-audiobook 0.2.0 dist   # needs appimagetool
+```
+
+On Windows: `cargo build --release --locked --features llm,console-wrapper`, copy `target\release\text-to-audiobook-console.exe` to `dist\windows\text-to-audiobook.com` next to `text-to-audiobook.exe`, then `iscc /DAppVersion=0.2.0 packaging\windows\text-to-audiobook.iss` ([Inno Setup 6](https://jrsoftware.org/isinfo.php)).
+
+### Building from source
 
 ```bash
 git clone https://github.com/brln-devlabs/text-to-audiobook
@@ -96,7 +130,7 @@ cargo build --release --no-default-features --features tts       # add ,llm for 
 
 ### Hugging Face token (optional)
 
-Models are downloaded automatically on first use. Set `HF_TOKEN` if a download is refused:
+Models are downloaded automatically on first use. The GUI asks first, at the first start and before a step that needs a model not on disk yet (e.g. after switching to 1.7B), and shows the progress; an interrupted download continues where it stopped. Set `HF_TOKEN` if a download is refused:
 
 ```bash
 export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxx  # macOS/Linux
@@ -111,7 +145,14 @@ $env:HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxxxx"  # Windows PowerShell
 
 ## Usage
 
-All paths are relative to the project root: the current directory, `$TTA_ROOT` or `--root DIR`. It holds `settings.json`, `input/`, `output/`, `cache/`, `logs/` and `models/`.
+All paths are relative to the project root. It holds `settings.json`, `input/`, `output/`, `cache/`, `logs/` and `models/` and is, in this order:
+
+1. `--root DIR`
+2. `$TTA_ROOT`
+3. the current directory, if it has a `settings.json` or an `input/` folder (as before: start the program in a project folder)
+4. otherwise `Documents/text-to-audiobook` (Windows: the Documents folder; Linux: `XDG_DOCUMENTS_DIR`, e.g. `~/Dokumente`, else the home folder). Installed copies started from the start menu end up here.
+
+Put the texts into `input/`; "Open" next to "Input Directory" in the GUI shows the folder.
 
 ### GUI
 
@@ -126,7 +167,9 @@ Select the input and output directories, tick the stories and run the stages (th
 
 The audit and the assembly without TTS remain available on the command line (`cleanup`, `assemble`).
 
-The app icon lives in [`assets/`](assets/) and is set for the window, task bar and Dock; on Windows it is also embedded in the `.exe` (`build.rs`). GNOME and KDE take it from a desktop entry (Wayland has no window icons), which the GUI writes on start to `~/.local/share/applications/text-to-audiobook.desktop`; it launches the binary in the current project folder. An own entry of that name without the line `X-TextToAudiobook-Managed=true` is left untouched.
+The app icon lives in [`assets/`](assets/) and is set for the window, task bar and Dock; on Windows it is also embedded in the `.exe` (`build.rs`). GNOME and KDE take it from a desktop entry (Wayland has no window icons), which the GUI writes on start to `~/.local/share/applications/text-to-audiobook.desktop`; it launches the binary (from an AppImage: the AppImage file) in the current project folder. An own entry of that name without the line `X-TextToAudiobook-Managed=true` is left untouched; the `.deb` package brings its own entry, then none is written.
+
+On Windows the GUI build is a Windows program: started from Explorer or the start menu it opens no console window. In a console, `text-to-audiobook run` etc. runs `text-to-audiobook.com` next to it (console programs prefer `.com` over `.exe`), which passes input, output and the exit code through.
 
 ### Command line
 
@@ -292,6 +335,8 @@ Format: `YYYY-MM-DD HH:MM:SS,mmm | LEVEL | module | message`
 | `could not find native static library cudart_static` | Build with `--features cuda` (Llama stays on the CPU); for `llm-cuda` set `CUDA_LIBRARY_PATH` to the directory with the static CUDA libraries |
 | `CUDA out of memory` | Use the 0.6B model, keep `LLM_GPU_LAYERS = 0`, close other GPU programs |
 | GUI does not start on Linux (`xkbcommon`) | Install `libxkbcommon-x11-0` (Debian/Ubuntu) and GPU/OpenGL drivers |
+| AppImage does not start ("FUSE") | start it with `--appimage-extract-and-run`, or install FUSE (`sudo apt install fuse3`) |
+| Windows: no output in the console | type `text-to-audiobook` without `.exe` (runs `text-to-audiobook.com`), or call the `.com` directly |
 | Voice inconsistency between chunks | Check `cache/voice_reference.wav`; after changing the model, delete `output/<project>/chunks` (a new voice is picked up automatically) |
 | Want to test without models | `text-to-audiobook --mock-models run` |
 
@@ -309,7 +354,7 @@ Format: `YYYY-MM-DD HH:MM:SS,mmm | LEVEL | module | message`
 | --- | --- | --- |
 | Tests | Push to main/master/develop, PRs | `cargo test --no-default-features` on Linux (no GUI or model backends) and a CLI dry run |
 | Code Quality | Push to main/master/develop, PRs | `cargo fmt --check`, `cargo clippy` |
-| Build & Release | Git tags (v*), manual trigger | release binaries for all platforms |
+| Build & Release | Git tags (v*), manual trigger | Windows installer and portable ZIP, Linux `.deb` and AppImage (built on Ubuntu 22.04), macOS binary; checks the run-time dependencies and makes a dry run of each package |
 | Docker Build | Tags, main branch, manual | build and push the headless Docker image |
 
 ### Docker

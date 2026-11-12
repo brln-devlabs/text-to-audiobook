@@ -1066,10 +1066,7 @@ mod tests {
                 "Nov 7, 2026 · @name",
                 "siebter November zweitausendsechsundzwanzig · @name",
             ),
-            (
-                "am Sept. 11, 2001",
-                "am elften September zweitausendeins",
-            ),
+            ("am Sept. 11, 2001", "am elften September zweitausendeins"),
             (
                 "Stand: March 3, 1995.",
                 "Stand: dritter März neunzehnhundertfünfundneunzig.",
