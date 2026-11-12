@@ -29,9 +29,16 @@ use qwen_tts::nn::generation_options::GenerationOptions;
 use super::{TtsBackend, Wave};
 use crate::audio::{read_wav, resample};
 
-/// Sequences longer than this are decoded in chunks (less VRAM).
-const CHUNK_THRESHOLD: usize = 512;
-const CHUNK_SIZE: usize = 256;
+/// Code frames per decoder pass, tried in this order: a smaller size is
+/// only used after the GPU ran out of memory. The vocoder upsamples each
+/// 12 Hz frame to 1920 samples, and Candle's convolutions (im2col) and the
+/// f32 SnakeBeta activations need several MB of VRAM per frame at the last
+/// stages, so a 40 s part (~500 frames) decoded in one pass needs a few GB
+/// and does not fit next to the model on a 4 GB GPU. 64 frames (~5 s of
+/// audio) plus context stay well under 1 GB.
+const DECODE_CHUNK_SIZES: [usize; 3] = [64, 32, 16];
+/// Frames decoded before each chunk and dropped again, so the causal
+/// decoder starts every chunk with context (no clicks at the seams).
 const LEFT_CONTEXT: usize = 32;
 
 pub struct QwenBackend {
@@ -172,13 +179,20 @@ impl QwenBackend {
             .generate(&text_ids, &options, max_tokens, &sampling)?;
         let audio = self.decode(&output)?;
         let samples: Vec<f32> = audio.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
+        let sample_rate = self.model.sample_rate() as u32;
+        log::debug!(
+            "TTS: {} frames -> {:.1} s audio",
+            output.num_steps,
+            samples.len() as f64 / f64::from(sample_rate.max(1))
+        );
         Ok(Wave {
             samples,
-            sample_rate: self.model.sample_rate() as u32,
+            sample_rate,
         })
     }
 
-    /// Codes -> waveform, without the EOS step, chunked for long outputs.
+    /// Codes -> waveform, without the EOS step, decoded chunk by chunk;
+    /// after an out-of-memory error the next smaller chunk size is tried.
     fn decode(&self, output: &Output) -> Result<Tensor> {
         let steps = output.codes.dim(1)?;
         if steps == 0 {
@@ -198,12 +212,37 @@ impl QwenBackend {
             .model
             .audio_tokenizer()
             .ok_or_else(|| anyhow!("speech tokenizer not loaded (speech_tokenizer/ missing?)"))?;
-        Ok(if len > CHUNK_THRESHOLD {
-            tokenizer.chunked_decode(&codes, CHUNK_SIZE, LEFT_CONTEXT)?
-        } else {
-            tokenizer.decode(&codes)?
-        })
+        let mut smaller = DECODE_CHUNK_SIZES[1..].iter().copied();
+        let mut chunk = DECODE_CHUNK_SIZES[0];
+        loop {
+            let result = if len <= chunk {
+                tokenizer.decode(&codes)
+            } else {
+                tokenizer.chunked_decode(&codes, chunk, LEFT_CONTEXT)
+            };
+            match result {
+                Ok(audio) => return Ok(audio),
+                Err(e) if is_out_of_memory(&e) => {
+                    let Some(next) = smaller.next() else {
+                        return Err(anyhow::Error::from(e)
+                            .context(format!("decoding {len} frames even in chunks of {chunk}")));
+                    };
+                    log::warn!(
+                        "Out of GPU memory decoding {len} frames in chunks of {chunk}, \
+                         retrying with chunks of {next}"
+                    );
+                    chunk = next;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
+}
+
+/// CUDA ("CUDA_ERROR_OUT_OF_MEMORY") or Metal allocation failure.
+fn is_out_of_memory(e: &candle_core::Error) -> bool {
+    let text = format!("{e:?} {e}").to_lowercase();
+    text.contains("out_of_memory") || text.contains("out of memory")
 }
 
 impl TtsBackend for QwenBackend {
@@ -249,5 +288,26 @@ impl TtsBackend for QwenBackend {
 
     fn count_tokens(&self, text: &str) -> Option<usize> {
         self.model.text_processor().map(|p| p.tokenize(text).len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_out_of_memory() {
+        let cuda = candle_core::Error::Msg(
+            "DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")".into(),
+        );
+        assert!(is_out_of_memory(&cuda));
+        let other = candle_core::Error::Msg("shape mismatch in matmul".into());
+        assert!(!is_out_of_memory(&other));
+    }
+
+    #[test]
+    fn chunk_sizes_shrink() {
+        assert!(DECODE_CHUNK_SIZES.windows(2).all(|w| w[0] > w[1]));
+        assert!(DECODE_CHUNK_SIZES.iter().all(|&c| c > 0));
     }
 }

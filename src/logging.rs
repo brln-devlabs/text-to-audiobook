@@ -147,6 +147,15 @@ pub fn format_record(record: &Record) -> String {
     )
 }
 
+/// Third-party warnings that are known to be harmless and only confuse.
+fn is_known_noise(record: &Record) -> bool {
+    // qwen_tts warns about every sampled code_0 >= 2048, but its sampler
+    // suppresses all of them except the end-of-speech token (2150): the
+    // warning fires once at the normal end of every generated part.
+    record.target().starts_with("qwen_tts::nn::generation")
+        && record.args().to_string().contains("invalid for decoder")
+}
+
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata) -> bool {
         // Our own messages at every level; third-party crates only from WARNING up.
@@ -154,7 +163,7 @@ impl Log for Logger {
     }
 
     fn log(&self, record: &Record) {
-        if !self.enabled(record.metadata()) {
+        if !self.enabled(record.metadata()) || is_known_noise(record) {
             return;
         }
         let line = format_record(record);
@@ -232,6 +241,28 @@ mod tests {
         assert_eq!(parse_level("warning", LevelFilter::Info), LevelFilter::Warn);
         assert_eq!(parse_level("DEBUG", LevelFilter::Info), LevelFilter::Debug);
         assert_eq!(parse_level("bogus", LevelFilter::Info), LevelFilter::Info);
+    }
+
+    #[test]
+    fn end_of_speech_warning_is_dropped() {
+        let noise = |target: &str, msg: &str| {
+            is_known_noise(
+                &Record::builder()
+                    .level(Level::Warn)
+                    .target(target)
+                    .args(format_args!("{msg}"))
+                    .build(),
+            )
+        };
+        assert!(noise(
+            "qwen_tts::nn::generation",
+            "code_0 >= 2048 (invalid for decoder) step=257 token=2150"
+        ));
+        assert!(!noise("qwen_tts::nn::generation", "something else went wrong"));
+        assert!(!noise(
+            "text_to_audiobook::tts",
+            "code_0 >= 2048 (invalid for decoder)"
+        ));
     }
 
     #[test]
