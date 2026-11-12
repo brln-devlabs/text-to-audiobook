@@ -419,14 +419,34 @@ pub fn format_chapter_title(source_file: &str) -> String {
     }
 }
 
-/// True if cached chunk metadata belongs to `text` (whitespace ignored).
+/// True if cached chunk metadata belongs to `text` (runs of whitespace count
+/// as one space).
 fn meta_matches(meta: &ChunkMeta, text: &str) -> bool {
-    let cached: String = meta.segments.iter().map(|s| squash_ws(&s.text)).collect();
-    !meta.segments.is_empty() && cached == squash_ws(text)
+    let cached: Vec<&str> = meta.segments.iter().map(|s| s.text.as_str()).collect();
+    !meta.segments.is_empty() && norm_ws(&cached.join(" ")) == norm_ws(text)
 }
 
-fn squash_ws(s: &str) -> String {
-    s.chars().filter(|c| !c.is_whitespace()).collect()
+fn norm_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Chapter name spoken before a file (`VOCALIZE_CHAPTER_NAMES`): the file's
+/// first heading (the cleaner drops headings from the text), else its name.
+fn spoken_chapter_title(hints: &ProjectHints, source_file: &str) -> String {
+    hints
+        .chapters
+        .get(source_file)
+        .and_then(|(_, t)| t.clone())
+        .unwrap_or_else(|| format_chapter_title(source_file))
+}
+
+fn with_chapter_title(title: &str, text: &str) -> String {
+    let sep = if title.ends_with(['.', '!', '?', ':']) {
+        " "
+    } else {
+        ". "
+    };
+    format!("{title}{sep}{text}")
 }
 
 /// Split at whitespace runs preceded by `.!?` and followed by `A-Z`, `"` or
@@ -448,7 +468,9 @@ fn split_emotion_sentences(text: &str) -> Vec<String> {
                 }
             }
             let next = text[end..].chars().next();
-            if matches!(next, Some(n) if n.is_ascii_uppercase() || n == '"' || n == '\'') {
+            if matches!(next, Some(n) if n.is_ascii_uppercase() || n == '"' || n == '\'')
+                && !crate::chunker::ends_with_abbreviation(&text[start..i])
+            {
                 out.push(text[start..i].to_string());
                 start = end;
             }
@@ -1680,18 +1702,51 @@ impl LlmNormalizer {
 
         let rechunked_len = rechunked.len();
         for (i, seg) in rechunked.iter().enumerate() {
+            // A cached record is reused only for exactly this text (with the
+            // spoken chapter name in front where one belongs).
+            let starts_file = current_source.as_deref() != Some(seg.source_file.as_str());
+            let titled = settings.vocalize_chapter_names && starts_file;
+            let expected = if titled {
+                with_chapter_title(&spoken_chapter_title(hints, &seg.source_file), &seg.text)
+            } else {
+                seg.text.clone()
+            };
             let cached = storage
                 .load_segment_meta(i)
                 .and_then(Segment::from_value)
                 .filter(|r| {
                     let same = r.source_file == seg.source_file
-                        && squash_ws(&r.normalized_text).ends_with(&squash_ws(&seg.text));
+                        && r.chapter_title_added == titled
+                        && norm_ws(&r.normalized_text) == norm_ws(&expected);
                     if !same {
                         log::info!("Segment {i}: text changed since it was cached, rebuilding");
                     }
                     same
                 });
-            if let Some(record) = cached {
+            if let Some(mut record) = cached {
+                if starts_file {
+                    // Chapter and book info start here: take them over.
+                    current_chapter_number = record.chapter_number;
+                    if let Some(t) = &record.chapter_title {
+                        current_chapter_title = t.clone();
+                    }
+                    if !story_title_detected {
+                        story_title = record.story_title.clone();
+                        story_title_detected = true;
+                    }
+                } else {
+                    // Inside a chapter: keep the chapter info consistent with
+                    // segments rebuilt before it.
+                    let before = record.clone();
+                    record.chapter_number = current_chapter_number;
+                    record.chapter_title = Some(current_chapter_title.clone());
+                    if story_title_detected {
+                        record.story_title = story_title.clone();
+                    }
+                    if record != before {
+                        storage.save_segment_meta(i, &record.to_value());
+                    }
+                }
                 final_segments.push(record);
                 current_source = Some(seg.source_file.clone());
                 continue;
@@ -1716,7 +1771,6 @@ impl LlmNormalizer {
                 }
             }
 
-            let mut spoken_title = None;
             if new_source {
                 let info = self.detect_chapter_info(&seg.text);
                 let (hint_number, hint_title) = hints
@@ -1733,7 +1787,6 @@ impl LlmNormalizer {
                 } else {
                     current_chapter_number = hint_number;
                 }
-                spoken_title = hint_title.clone();
                 match info.chapter_title.or(hint_title) {
                     Some(t) => {
                         current_chapter_title = t;
@@ -1748,16 +1801,8 @@ impl LlmNormalizer {
 
             let chapter_title_added = settings.vocalize_chapter_names && new_source;
             if chapter_title_added {
-                // The file's first heading (the cleaner drops headings from
-                // the text), else the file name.
-                let chapter_title =
-                    spoken_title.unwrap_or_else(|| format_chapter_title(&source_file));
-                let sep = if chapter_title.ends_with(['.', '!', '?', ':']) {
-                    " "
-                } else {
-                    ". "
-                };
-                text = format!("{chapter_title}{sep}{text}");
+                let chapter_title = spoken_chapter_title(hints, &source_file);
+                text = with_chapter_title(&chapter_title, &text);
                 report(
                     progress,
                     &format!(
@@ -2234,6 +2279,61 @@ mod tests {
         let texts: Vec<&str> = stored.iter().map(|s| s.normalized_text.as_str()).collect();
         assert_eq!(texts, ["Neu eins.", "Neu zwei."]);
         assert!(!cache.join("chunk_002.json").exists());
+    }
+
+    #[test]
+    fn cached_segment_must_match_exactly() {
+        // An old record that merely ends with the new text (a list that is
+        // now split into items) used to be reused.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let mut n = LlmNormalizer::new("fake.gguf", &settings());
+        let run = |n: &mut LlmNormalizer, texts: &[&str]| -> Vec<String> {
+            let chunks: Vec<Chunk> = texts.iter().map(|t| Chunk::new(*t, true)).collect();
+            n.process_all(
+                &chunks,
+                &cache,
+                &settings(),
+                &ProjectHints::default(),
+                None,
+                None,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|s| s.normalized_text)
+            .collect()
+        };
+        run(&mut n, &["Erster.", "- Punkt a. - Punkt b."]);
+        assert_eq!(
+            run(&mut n, &["Erster.", "Punkt a.", "Punkt b."]),
+            ["Erster.", "Punkt a.", "Punkt b."]
+        );
+        run(&mut n, &["Erster.", "- Punkt a. - Punkt b."]);
+        assert_eq!(
+            run(&mut n, &["Erster.", "Punkt b."]),
+            ["Erster.", "Punkt b."]
+        );
+        run(&mut n, &["Erster.", "Punkt a.", "Punkt b."]);
+        // Only spaces differ: still the same text, but "„ low“" is not "„low“".
+        assert_eq!(
+            run(&mut n, &["Erster.", "Punkt  a.", "Punkt b."])[1],
+            "Punkt a."
+        );
+        run(&mut n, &["(„ low“)"]);
+        assert_eq!(run(&mut n, &["(„low“)"]), ["(„low“)"]);
+    }
+
+    #[test]
+    fn emotion_sentences_keep_abbreviations() {
+        assert_eq!(
+            split_emotion_sentences(
+                "Sie unterscheidet nicht (z. B. Preisgabe) und (z. B. das Zitieren). Ende hier."
+            ),
+            [
+                "Sie unterscheidet nicht (z. B. Preisgabe) und (z. B. das Zitieren).",
+                "Ende hier."
+            ]
+        );
     }
 
     #[test]

@@ -59,6 +59,12 @@ static LONE_STAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\*+").unwrap()
 /// "bleu_score" -> "bleu score"; a leading "_low" just loses the underscore.
 static WORD_UNDERSCORE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([\p{L}\p{N}])_+([\p{L}\p{N}])").unwrap());
+/// A "_" on its own ("„_“ vor den Variablen") is spoken.
+static LONE_UNDERSCORE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(^|[\s„“"'(«»‚‘])_+($|[\s„“"')«»‚‘.,;:])"#).unwrap());
+/// "verlinkt unter URL1 und URL2." -> "verlinkt und ." -> "verlinkt."
+static DANGLING_AND: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s+(?:und|oder|and|or)\s*([.,;:)])").unwrap());
 static STRAY_UNDERSCORE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_+").unwrap());
 /// Brackets emptied by a removed URL: "API (https://…)" -> "API ()".
 static EMPTY_BRACKETS: LazyLock<Regex> =
@@ -130,13 +136,22 @@ fn clean_inline(line: &str) -> String {
     let line = BOLD_UNDERSCORE.replace_all(&line, "$1");
     let line = ITALIC_UNDERSCORE.replace_all(&line, "$1$2$3");
     let line = INLINE_CODE.replace_all(&line, "$1");
+    let had_url = URL.is_match(&line);
     let line = URL.replace_all(&line, "");
+    let line = if had_url {
+        DANGLING_AND
+            .replace_all(&SPACE_BEFORE_PUNCT.replace_all(&line, "$1"), "$1")
+            .into_owned()
+    } else {
+        line.into_owned()
+    };
     let line = HTML_TAG.replace_all(&line, "");
     let line = restore_escapes(&line);
     let line = FOOTNOTE_MARK.replace_all(&line, "$1$2$3");
     let line = LONE_STAR.replace_all(&line, "");
     let line = WORD_UNDERSCORE.replace_all(&line, "$1 $2");
     let line = WORD_UNDERSCORE.replace_all(&line, "$1 $2");
+    let line = LONE_UNDERSCORE.replace_all(&line, "${1}Unterstrich$2");
     let line = STRAY_UNDERSCORE.replace_all(&line, "");
     let line = EMPTY_BRACKETS.replace_all(&line, "");
     let line = SPACE_BEFORE_PUNCT.replace_all(&line, "$1");
@@ -271,6 +286,14 @@ mod tests {
         assert_eq!(
             clean(r"Unterstrich („\_low“, „\_high“)"),
             "Unterstrich („low“, „high“)"
+        );
+        assert_eq!(
+            clean(r"ein vorangestelltes „\_“ vor den Variablen"),
+            "ein vorangestelltes „Unterstrich“ vor den Variablen"
+        );
+        assert_eq!(
+            clean("Hot 100 ausgewählt, verlinkt unter https://a.org/x und https://b.org/y."),
+            "Hot 100 ausgewählt, verlinkt."
         );
         assert_eq!(
             clean("nltk.translate.bleu_score"),
