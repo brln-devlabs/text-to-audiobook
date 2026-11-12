@@ -177,6 +177,21 @@ Projektordner (dort liegen `settings.json`, `input/`, `output/`, `cache/`):
 Ohne Befehl öffnet sich die Oberfläche. `text-to-audiobook --help` zeigt die Befehle für die
 Kommandozeile, etwa `run`, `prepare` oder `generate`.
 
+### Programm-Icon
+
+Fenster, Taskleiste und Dock zeigen das Icon aus `assets/` (aufgeschlagenes Buch mit
+Schallwelle); unter Windows steckt es auch in der `.exe`. Unter Linux mit Wayland zeigt die
+Taskleiste es erst mit einem Startmenü-Eintrag:
+
+```bash
+mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/scalable/apps
+cp assets/icon.svg ~/.local/share/icons/hicolor/scalable/apps/text-to-audiobook.svg
+cp assets/text-to-audiobook.desktop ~/.local/share/applications/
+```
+
+In der kopierten `text-to-audiobook.desktop` dann `Exec=` auf das Programm und `Path=` auf
+den Projektordner setzen.
+
 ## Modelle
 
 Beim ersten Start lädt das Programm die Modelle herunter:
