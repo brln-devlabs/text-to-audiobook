@@ -62,6 +62,40 @@ fn starts_sentence(c: char) -> bool {
         )
 }
 
+/// Words with a full stop that do not end a sentence.
+const ABBREVIATIONS: &[&str] = &[
+    "al.", "bzw.", "ca.", "Dr.", "Prof.", "Nr.", "vgl.", "Vgl.", "evtl.", "ggf.", "inkl.", "zzgl.",
+    "Abb.", "Tab.", "Kap.", "Abschn.", "Bd.", "Hrsg.", "Jh.", "Mio.", "Mrd.", "Str.", "St.",
+    "geb.", "gest.", "sog.", "u.", "Mr.", "Mrs.", "Ms.", "vs.", "Fig.", "Eq.", "Sec.", "pp.",
+    "Vol.", "No.", "Jan.", "Feb.", "Aug.", "Sept.", "Okt.", "Nov.", "Dez.",
+];
+
+/// True if the last word of `before` is an abbreviation, an initial or an
+/// ordinal number, so the full stop does not end the sentence: "z. B.",
+/// "Lee et al. (2021)", "Christopher A. Choquette", "am 3. Mai".
+pub(crate) fn ends_with_abbreviation(before: &str) -> bool {
+    let word = before
+        .rsplit(|c: char| c.is_whitespace() || c == '(' || c == '[')
+        .next()
+        .unwrap_or("");
+    if ABBREVIATIONS.contains(&word) {
+        return true;
+    }
+    let Some(stem) = word.strip_suffix('.') else {
+        return false;
+    };
+    // Initials and letter abbreviations: "A.", "z.", "z.B.", "U.S."
+    if !stem.is_empty()
+        && stem
+            .split('.')
+            .all(|p| p.chars().count() == 1 && p.chars().all(char::is_alphabetic))
+    {
+        return true;
+    }
+    // "3." / "15." before a word is an ordinal or a date.
+    !stem.is_empty() && stem.len() <= 2 && stem.chars().all(|c| c.is_ascii_digit())
+}
+
 /// Split one paragraph at sentence boundaries. Covers German umlauts and
 /// German/French quotes as well as ASCII.
 pub fn split_sentences(paragraph: &str) -> Vec<String> {
@@ -87,6 +121,7 @@ pub fn split_sentences(paragraph: &str) -> Vec<String> {
         if let Some(a) = after
             && ends_sentence(before)
             && starts_sentence(a)
+            && !ends_with_abbreviation(before)
         {
             sentences.push(before.trim().to_string());
             start = end;
@@ -266,5 +301,23 @@ mod tests {
         let chunks = split_to_chunks("One. Two.\n\nThree.", 499, "story_ch1");
         assert!(chunks.iter().all(|c| c.source_file == "story_ch1"));
         assert_eq!(Chunk::new("x", false).source_file, "default");
+    }
+
+    #[test]
+    fn abbreviations_and_initials_do_not_split() {
+        let s = split_sentences(
+            "Sie unterscheidet nicht (z. B. Preisgabe) und (z.B. Zitate). Lee et al. (2021) zeigen es. Christopher A. Choquette-Choo schrieb am 15. September. Danach kam U. Müller.",
+        );
+        assert_eq!(
+            s,
+            vec![
+                "Sie unterscheidet nicht (z. B. Preisgabe) und (z.B. Zitate).",
+                "Lee et al. (2021) zeigen es.",
+                "Christopher A. Choquette-Choo schrieb am 15. September.",
+                "Danach kam U. Müller.",
+            ]
+        );
+        // A year or a word still ends the sentence.
+        assert_eq!(split_sentences("Das war 1990. Danach nicht.").len(), 2);
     }
 }

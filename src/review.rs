@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Settings;
 use crate::normalize_de::{
     MONTHS, ROMAN_KEYWORDS, cardinal, ordinal, ordinal_ending, prev_word_raw, prev_words,
-    roman_value,
+    roman_is_label, roman_value,
 };
 use crate::segment::Segment;
 use crate::tts::resolve_language;
@@ -250,8 +250,8 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
         let word = num.as_str();
         let dot = !c[2].is_empty();
         let Some(v) = roman_value(word) else { continue };
-        if NOT_ROMAN.contains(&word) {
-            continue;
+        if NOT_ROMAN.contains(&word) || roman_is_label(&text[num.end()..]) {
+            continue; // "Anhang C.1" is a section label
         }
         let raw_prev = prev_word_raw(text, num.start());
         if raw_prev.is_some_and(|p| ROMAN_KEYWORDS.contains(&p)) {
@@ -601,5 +601,11 @@ mod tests {
         assert_eq!(pending("Buch", &segs, &settings, &store).len(), 1);
         let off = Settings::default();
         assert!(pending("Buch", &segs, &off, &store).is_empty());
+    }
+
+    #[test]
+    fn section_labels_are_not_asked() {
+        assert!(find_spots("Anhang C.1 gibt ein Verfahren an.").is_empty());
+        assert!(find_spots("Siehe C.2 und D.1.").is_empty());
     }
 }

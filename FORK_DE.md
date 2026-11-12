@@ -40,6 +40,21 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   „in der 3.“). Römische Zahlen nach Wörtern wie Kapitel, Teil, Band oder Akt werden zur
   Grundzahl („Kapitel IV“ → „Kapitel vier“), vor „Jahrhundert“ mit eindeutigem Wort davor
   zur Ordnungszahl („im XIX. Jahrhundert“ → „im neunzehnten Jahrhundert“).
+  Für Fachtexte: Abschnittsnummern („Abschnitt 3.3“ → „drei Punkt drei“, „Anhang B.1“ →
+  „B Punkt eins“; „Anhang C“ bleibt ein Buchstabe), Modellgrößen („1.3B“ → „eins Komma drei
+  Milliarden“, „125M“), GB/MB/TB, Versionen („SQuAD2.0“ → „zwei Punkt null“), arXiv-Nummern
+  Ziffer für Ziffer, Hochzahlen („10²“ → „zehn hoch zwei“) und Rechenzeichen (=, <, >, ≤, ≥,
+  ≈, ∈, ×, ^).
+- **Textbereinigung** (immer): Markdown-Escapes („\*“, „\_“, „\[“) werden zum Zeichen,
+  Fußnotenzeichen („Carlini¹“, „¹ Google Research“, „\*“) entfallen, Tabellen werden Zeile
+  für Zeile als Aufzählung gelesen, jeder Listenpunkt (z. B. Literaturangaben) wird ein
+  eigener Absatz, und bei entfernten Links fällt das „unter“ davor mit weg. Sätze werden
+  nicht mehr bei Abkürzungen, Initialen oder Ordnungszahlen getrennt („z. B.“, „et al.“,
+  „Christopher A. Choquette“, „am 15. September“). Gesprochene Kapitelnamen
+  (`VOCALIZE_CHAPTER_NAMES`) nehmen die erste Überschrift der Datei, sonst den Dateinamen in
+  seiner Schreibweise. Kapiteltitel, die das LLM erfindet und die nicht im Text stehen
+  (etwa „The Beginning“), werden verworfen. Die Änderungen wirken nach „Clear Cache“ und
+  erneutem „1. Prepare Segments“.
 - **Unsichere Zahlen prüfen** (`REVIEW_NUMBERS = true`, zusätzlich zu `NORMALIZE_NUMBERS`):
   Stellen, die die Regeln nicht sicher entscheiden können, also Ordnungszahlen ohne
   eindeutiges Wort davor („Sie kam als 3. ins Ziel“, „Er wurde 3.“) und römische Zahlen

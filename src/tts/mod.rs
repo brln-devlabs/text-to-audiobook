@@ -117,7 +117,10 @@ fn split_after_sentence_end(text: &str) -> Vec<String> {
     let mut iter = text.char_indices().peekable();
     let mut prev: Option<char> = None;
     while let Some((i, c)) = iter.next() {
-        if c.is_whitespace() && matches!(prev, Some('.' | '!' | '?')) {
+        if c.is_whitespace()
+            && matches!(prev, Some('.' | '!' | '?'))
+            && !crate::chunker::ends_with_abbreviation(&text[start..i])
+        {
             let mut end = i + c.len_utf8();
             while let Some(&(j, d)) = iter.peek() {
                 if d.is_whitespace() {
@@ -938,8 +941,8 @@ pub mod tests {
         };
         let engine = TtsEngine::with_backend(Box::new(fake), &s, &paths);
         assert_eq!(
-            engine.split_if_too_long("A b c. D e f. G h."),
-            ["A b c.", "D e f.", "G h."]
+            engine.split_if_too_long("A b cc. D e ff. G hh."),
+            ["A b cc.", "D e ff.", "G hh."]
         );
     }
 
@@ -1064,8 +1067,13 @@ pub mod tests {
     #[test]
     fn sentence_end_split() {
         assert_eq!(
-            split_after_sentence_end("A. b!  C? d"),
-            ["A.", "b!", "C?", "d"]
+            split_after_sentence_end("Ab. b!  C? d"),
+            ["Ab.", "b!", "C?", "d"]
+        );
+        // Abbreviations and initials stay inside the sentence.
+        assert_eq!(
+            split_after_sentence_end("Wie z. B. Lee et al. sagen. Ende"),
+            ["Wie z. B. Lee et al. sagen.", "Ende"]
         );
     }
 }
