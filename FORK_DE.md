@@ -90,7 +90,9 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   mehr zu sprechen bliebe. Zusammen mit „Apply to all identical spots“ entfernt sie etwa alle
   Gliederungsnummern auf einmal. „Program default“ überlässt die Stelle den Regeln, „Skip“
   lässt sie offen. Bei Gliederungspunkten am
-  Satzanfang („II. Kapitalistische Revolution“) steht „Zweitens:“ zuerst. Ist der Satz allein
+  Satzanfang oder nach einem Doppelpunkt („II. Kapitalistische Revolution“, auch klein
+  weiter wie „1. allseitige …“) steht „Zweitens:“ zuerst, nicht aber bei „1. und 2.“ oder
+  „1. bis 3.“. Ist der Satz allein
   nicht eindeutig, klappt „▼ More context“ je drei Abschnitte davor und danach auf; bei der
   nächsten Stelle ist die Ansicht wieder zu (Kommandozeile: `m`). Das Fenster lässt sich jederzeit
   über „Review Numbers“ neben der Projektliste öffnen; vor „2. Generate Audio“ fragt das

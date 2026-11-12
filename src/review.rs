@@ -109,6 +109,19 @@ fn choice(replacement: String, hint: &str) -> Choice {
 /// sentence), so one choice can be applied to all of them.
 pub const ENUMERATION_KEY: &str = "enum";
 
+/// Words after a number that continue a range or a pair ("1. und 2.
+/// Klasse", "1. bis 3. Mai"), not an enumeration item.
+const NOT_ENUMERATION: &[&str] = &["und", "oder", "bis", "sowie", "bzw"];
+
+/// Number at the start of a sentence, after a colon or at the start of a
+/// segment: an enumeration item or a heading number ("2. Die Arbeiter …",
+/// "1. allseitige …"). A single letter after it is an abbreviation
+/// ("V. i. S. d. P.").
+fn enumeration_start(raw_prev: Option<&str>, next: &str) -> bool {
+    raw_prev.is_none()
+        && (starts_upper(next) || (next.chars().count() > 1 && !NOT_ENUMERATION.contains(&next)))
+}
+
 /// "Zweitens:" for an enumeration item or heading number.
 fn enumeration_choice(n: u64) -> Choice {
     choice(
@@ -302,8 +315,8 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
             continue;
         }
         let original = format!("{}.", num.as_str());
-        // "2. Die Arbeiter …" at the start of a sentence: enumeration.
-        let enumeration = raw_prev.is_none() && starts_upper(next);
+        // "2. Die Arbeiter …", "1. allseitige …": enumeration.
+        let enumeration = enumeration_start(raw_prev, next);
         let mut choices = ordinal_choices(n, starts_upper(next), raw_prev.is_some());
         let key = if enumeration {
             choices.insert(0, enumeration_choice(n));
@@ -352,7 +365,7 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
         let after_name =
             raw_prev.is_some_and(|p| starts_upper(p) && !p.chars().all(char::is_uppercase));
         // "II. Kapitalistische Revolution" at the start of a sentence: enumeration.
-        let enumeration = dot && raw_prev.is_none() && starts_upper(&next);
+        let enumeration = dot && enumeration_start(raw_prev, &next);
         // Single letters are usually initials ("Hans V. Müller") or the letter
         // itself; only "Karl V. dankte ab" style and enumerations are asked.
         if word.len() == 1 && !enumeration && (!after_name || (dot && starts_upper(&next))) {
@@ -909,6 +922,17 @@ mod tests {
         assert_eq!(spots[1].key, ENUMERATION_KEY);
         // Initials in a sentence are still skipped.
         assert!(find_spots("Er traf Hans V. Müller.").is_empty());
+        // Lower case after the number: still an enumeration item.
+        let spots = find_spots("1. allseitige Agitation unter den Truppen; 2. die Arbeiter.");
+        assert_eq!(spots.len(), 2);
+        assert_eq!(spots[0].choices[0].replacement, "Erstens:");
+        assert_eq!(spots[1].choices[0].replacement, "Zweitens:");
+        assert_eq!(spots[1].key, ENUMERATION_KEY);
+        let spots = find_spots("Forderungen: II. die Arbeiter.");
+        assert_eq!(spots[0].choices[0].replacement, "Zweitens:");
+        // Ranges and pairs are not enumerations.
+        let spots = find_spots("1. und 2. Klasse waren voll.");
+        assert_ne!(spots[0].choices[0].replacement, "Erstens:");
     }
 
     #[test]
