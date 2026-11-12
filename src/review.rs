@@ -194,6 +194,16 @@ fn roman_choices(v: u64, dot: bool, after_name: bool) -> Vec<Choice> {
 }
 
 /// All spots in `text` the rules cannot decide, in text order.
+/// Hint of the choice that keeps the spot as written.
+pub const KEEP_HINT: &str = "keep as written (no conversion)";
+
+fn keep_choice(original: &str) -> Choice {
+    Choice {
+        replacement: original.to_string(),
+        hint: KEEP_HINT.to_string(),
+    }
+}
+
 pub fn find_spots(text: &str) -> Vec<Spot> {
     let mut spots = Vec::new();
 
@@ -302,6 +312,13 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
         });
     }
 
+    // Last choice everywhere: leave the text exactly as written.
+    for spot in &mut spots {
+        if !spot.choices.iter().any(|c| c.replacement == spot.original) {
+            spot.choices.push(keep_choice(&spot.original));
+        }
+    }
+
     spots.sort_by_key(|s| s.start);
     // Overlaps (a numeral matched twice) are dropped.
     let mut out: Vec<Spot> = Vec::new();
@@ -313,7 +330,8 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
     out
 }
 
-/// A stored decision. `replacement: None` = keep the program default.
+/// A stored decision. `replacement: None` = keep the program default;
+/// a replacement equal to `original` = keep the text as written.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Decision {
     pub segment: usize,
@@ -392,7 +410,15 @@ impl ReviewStore {
             if end > limit {
                 continue;
             }
-            out.replace_range(d.start..end, d.replacement.as_deref().unwrap_or_default());
+            let rep = d.replacement.as_deref().unwrap_or_default();
+            // "Keep as written": hidden from the number rules (see
+            // `normalize_de::protect`), restored after normalization.
+            let rep = if rep == d.original {
+                crate::normalize_de::protect(rep)
+            } else {
+                rep.to_string()
+            };
+            out.replace_range(d.start..end, &rep);
             limit = d.start;
         }
         out
@@ -607,5 +633,27 @@ mod tests {
     fn section_labels_are_not_asked() {
         assert!(find_spots("Anhang C.1 gibt ein Verfahren an.").is_empty());
         assert!(find_spots("Siehe C.2 und D.1.").is_empty());
+    }
+
+    #[test]
+    fn keep_as_written_is_offered_and_survives_normalization() {
+        let text = "2. Die Arbeiter kamen.";
+        let spots = find_spots(text);
+        let keep = spots[0].choices.last().unwrap();
+        assert_eq!(keep.replacement, "2.");
+        assert_eq!(keep.hint, KEEP_HINT);
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = ReviewStore::load(dir.path());
+        // Program default: the rules read the number.
+        store.set(0, &spots[0], None);
+        let default =
+            crate::normalize_de::unprotect(&crate::normalize_de::normalize(&store.apply(0, text)));
+        assert_eq!(default, "zwei. Die Arbeiter kamen.");
+        // Keep as written: the digits reach the TTS untouched.
+        store.set(0, &spots[0], Some(keep.replacement.clone()));
+        let kept =
+            crate::normalize_de::unprotect(&crate::normalize_de::normalize(&store.apply(0, text)));
+        assert_eq!(kept, text);
     }
 }
