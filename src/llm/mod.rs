@@ -419,6 +419,16 @@ pub fn format_chapter_title(source_file: &str) -> String {
     }
 }
 
+/// True if cached chunk metadata belongs to `text` (whitespace ignored).
+fn meta_matches(meta: &ChunkMeta, text: &str) -> bool {
+    let cached: String = meta.segments.iter().map(|s| squash_ws(&s.text)).collect();
+    !meta.segments.is_empty() && cached == squash_ws(text)
+}
+
+fn squash_ws(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 /// Split at whitespace runs preceded by `.!?` and followed by `A-Z`, `"` or
 /// `'` (Python: `re.split(r'(?<=[.!?])\s+(?=[A-Z"\'])', text)`).
 fn split_emotion_sentences(text: &str) -> Vec<String> {
@@ -1542,9 +1552,18 @@ impl LlmNormalizer {
                 );
                 break;
             }
+            // Cache entries of another text version (the cleaner or the
+            // chunker changed, or the input was edited) are analyzed again.
             let cached = storage
                 .load_chunk_meta(i)
-                .and_then(|v| serde_json::from_value::<ChunkMeta>(v).ok());
+                .and_then(|v| serde_json::from_value::<ChunkMeta>(v).ok())
+                .filter(|meta| {
+                    let same = meta_matches(meta, &chunk.text);
+                    if !same {
+                        log::info!("Chunk {i}: text changed since it was cached, analyzing again");
+                    }
+                    same
+                });
             let (segs, ends_paragraph, language) = match cached {
                 Some(meta) => (
                     meta.segments,
@@ -1659,8 +1678,20 @@ impl LlmNormalizer {
         let mut story_title: Option<String> = None;
         let mut story_title_detected = false;
 
+        let rechunked_len = rechunked.len();
         for (i, seg) in rechunked.iter().enumerate() {
-            if let Some(record) = storage.load_segment_meta(i).and_then(Segment::from_value) {
+            let cached = storage
+                .load_segment_meta(i)
+                .and_then(Segment::from_value)
+                .filter(|r| {
+                    let same = r.source_file == seg.source_file
+                        && squash_ws(&r.normalized_text).ends_with(&squash_ws(&seg.text));
+                    if !same {
+                        log::info!("Segment {i}: text changed since it was cached, rebuilding");
+                    }
+                    same
+                });
+            if let Some(record) = cached {
                 final_segments.push(record);
                 current_source = Some(seg.source_file.clone());
                 continue;
@@ -1757,6 +1788,20 @@ impl LlmNormalizer {
             };
             storage.save_segment_meta(i, &record.to_value());
             final_segments.push(record);
+        }
+
+        // Records left over from a longer earlier run would be read back as
+        // part of this text.
+        if !stopped(stop) && final_segments.len() == rechunked_len {
+            let mut id = final_segments.len();
+            while storage.delete_segment(id) {
+                id += 1;
+            }
+            let mut id = chunks.len();
+            while storage.delete_chunk(id) {
+                let _ = std::fs::remove_file(cache_dir.join(format!("chunk_{id:03}.json")));
+                id += 1;
+            }
         }
 
         report(
@@ -2154,6 +2199,41 @@ mod tests {
             .modified()
             .unwrap();
         assert_eq!(t1, t2);
+    }
+
+    #[test]
+    fn process_all_rebuilds_when_the_text_changed() {
+        // A cache of an older text version must not be reused by position:
+        // a re-chunked text used to keep the old segments and append the
+        // tail of the new ones, so parts of the book came twice.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let mut n = LlmNormalizer::new("fake.gguf", &settings());
+        let run = |n: &mut LlmNormalizer, texts: &[&str]| -> Vec<String> {
+            let chunks: Vec<Chunk> = texts.iter().map(|t| Chunk::new(*t, true)).collect();
+            n.process_all(
+                &chunks,
+                &cache,
+                &settings(),
+                &ProjectHints::default(),
+                None,
+                None,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|s| s.normalized_text)
+            .collect()
+        };
+        run(&mut n, &["Alt eins.", "Alt zwei.", "Alt drei."]);
+        assert_eq!(
+            run(&mut n, &["Neu eins.", "Neu zwei."]),
+            ["Neu eins.", "Neu zwei."]
+        );
+        // Nothing of the longer old run is read back.
+        let stored = crate::pipeline::load_cached_segments(&cache, "json");
+        let texts: Vec<&str> = stored.iter().map(|s| s.normalized_text.as_str()).collect();
+        assert_eq!(texts, ["Neu eins.", "Neu zwei."]);
+        assert!(!cache.join("chunk_002.json").exists());
     }
 
     #[test]
