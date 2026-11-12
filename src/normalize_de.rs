@@ -515,6 +515,9 @@ static JOURNAL: LazyLock<Regex> =
 /// Page numbers are cardinals, never years ("Seite 1173").
 static PAGE_NUMBERS: LazyLock<Regex> =
     LazyLock::new(|| re(r"\b(Seiten?)\s+(\d{1,6})(?:\s?[–-]\s?(\d{1,6}))?\b"));
+/// "600 000", "1 250 000": thousands separated by spaces.
+static SPACED_THOUSANDS: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(^|[^\d.,])(\d{1,3}(?:[ \u{00A0}\u{2009}\u{202F}]\d{3})+)($|[^\d.,])"));
 static MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| re(r"[ \t]{2,}"));
 static DAY_RANGE: LazyLock<Regex> = LazyLock::new(|| {
     re(
@@ -669,6 +672,14 @@ pub fn normalize(text: &str) -> String {
         })
         .into_owned();
     let mut s = symbols(&s);
+
+    // 600 000 -> 600000 (space, no-break or thin space between groups of three)
+    s = SPACED_THOUSANDS
+        .replace_all(&s, |c: &Captures| {
+            let digits: String = c[2].chars().filter(char::is_ascii_digit).collect();
+            format!("{}{digits}{}", &c[1], &c[3])
+        })
+        .into_owned();
 
     for (r, word) in SENTENCE_ABBREVIATIONS.iter() {
         s = r
@@ -1108,6 +1119,18 @@ mod tests {
                 "Seiten achtundzwanzig bis dreiundfünfzig, elfter bis fünfzehnter September zweitausenddreiundzwanzig.",
             ),
             ("pp. 28–53", "Seiten achtundzwanzig bis dreiundfünfzig"),
+            (
+                "eine Bevölkerung von 600 000 erzeugen",
+                "eine Bevölkerung von sechshunderttausend erzeugen",
+            ),
+            (
+                "mehr als 300 000 Pfund Sterling",
+                "mehr als dreihunderttausend Pfund Sterling",
+            ),
+            (
+                "1\u{202F}250\u{00A0}000 Menschen",
+                "eine Million zweihundertfünfzigtausend Menschen",
+            ),
             (
                 "EMNLP 2020, pp. 1173–1186.",
                 "EMNLP zweitausendzwanzig, Seiten tausendeinhundertdreiundsiebzig bis tausendeinhundertsechsundachtzig.",

@@ -43,7 +43,7 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   Für Fachtexte: Abschnittsnummern („Abschnitt 3.3“ → „drei Punkt drei“, „Anhang B.1“ →
   „B Punkt eins“; „Anhang C“ bleibt ein Buchstabe), Modellgrößen („1.3B“ → „eins Komma drei
   Milliarden“, „125M“), GB/MB/TB, Versionen („SQuAD2.0“ → „zwei Punkt null“), arXiv-Nummern
-  Ziffer für Ziffer, Literaturangaben („33:1877–1901“ → „Band dreiunddreißig, Seiten …“;
+  Ziffer für Ziffer, Tausender mit Leerzeichen („600 000“ → „sechshunderttausend“), Literaturangaben („33:1877–1901“ → „Band dreiunddreißig, Seiten …“;
   Seitenzahlen nie als Jahreszahl), Hochzahlen („10²“ → „zehn hoch zwei“) und Rechenzeichen (=, <, >, ≤, ≥,
   ≈, ∈, ×, ^).
 - **Textbereinigung** (immer): Markdown-Escapes („\*“, „\_“, „\[“) werden zum Zeichen,
@@ -53,7 +53,8 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   nicht mehr bei Abkürzungen, Initialen oder Ordnungszahlen getrennt („z. B.“, „et al.“,
   „Christopher A. Choquette“, „am 15. September“). Gesprochene Kapitelnamen
   (`VOCALIZE_CHAPTER_NAMES`) nehmen die erste Überschrift der Datei, sonst den Dateinamen in
-  seiner Schreibweise. Kapiteltitel, die das LLM erfindet und die nicht im Text stehen
+  seiner Schreibweise; derselbe Name steht dann auch als Kapiteltitel in `prepared.txt` und in den
+  Titel-Tags (statt „Chapter 1“). Kapiteltitel, die das LLM erfindet und die nicht im Text stehen
   (etwa „The Beginning“), werden verworfen.
 - **Geänderter Text wird erkannt:** Ändert sich der vorbereitete Text (neue Programmversion,
   bearbeitete Eingabe), verwirft Stufe 1 die betroffenen Einträge im Cache, statt sie nach
