@@ -81,7 +81,8 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   „1. Prepare Segments“ öffnet sich das Fenster „Review Numbers“ und zeigt jede Stelle im
   Satz mit Vorschlägen („dritte“, „dritten“, „Dritter“, „drei.“, „der Vierte“, „des
   Vierten“ …; bei römischen Zahlen mit Punkt alle Endungen, „VIII. Parteitag“ → „achte“,
-  „achten“, „achter“, „achtes“). Ein Klick übernimmt den Vorschlag und springt zur nächsten Stelle; mit
+  „achten“, „achter“, „achtes“; bei allen römischen Zahlen zusätzlich englisch: „Henry VIII“
+  → „the Eighth“, „eight“, „eighth“). Ein Klick übernimmt den Vorschlag und springt zur nächsten Stelle; mit
   „Apply to all identical spots“ gilt die Wahl für alle gleichen Stellen. „keep as written“
   lässt die Stelle genau so, wie sie im Text steht; auch die Regeln ändern sie dann nicht.
   Die letzte Auswahl (durchgestrichen, „remove from the text“) nimmt die Stelle ganz aus dem
