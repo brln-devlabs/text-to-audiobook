@@ -87,8 +87,29 @@ fn resolve_dtype(device: &Device, name: &str) -> DType {
 }
 
 impl QwenBackend {
-    /// Load `model_name` (Hugging Face id or local directory).
+    /// Load a Base model (voice cloning).
     pub fn load(model_name: &str, dtype_name: &str) -> Result<Self> {
+        let b = Self::load_any(model_name, dtype_name)?;
+        if !b.model.is_base_model() {
+            bail!("{model_name} is not a Base model; voice cloning needs a *-Base checkpoint");
+        }
+        Ok(b)
+    }
+
+    /// Load a VoiceDesign model (voice from a description).
+    pub fn load_voice_design(model_name: &str, dtype_name: &str) -> Result<Self> {
+        let b = Self::load_any(model_name, dtype_name)?;
+        if !b.model.is_voice_design_model() {
+            bail!(
+                "{model_name} is not a VoiceDesign model; a voice from a description needs \
+                 Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+            );
+        }
+        Ok(b)
+    }
+
+    /// Load `model_name` (Hugging Face id or local directory).
+    fn load_any(model_name: &str, dtype_name: &str) -> Result<Self> {
         let dir = crate::hub::resolve_tts_model_dir(model_name)?;
         let device = pick_device();
         let dtype = resolve_dtype(&device, dtype_name);
@@ -107,9 +128,6 @@ impl QwenBackend {
             .load_tts_model(&device, &cfg)
             .map_err(|e| anyhow!("{e}"))
             .with_context(|| format!("loading {model_name}"))?;
-        if !model.is_base_model() {
-            bail!("{model_name} is not a Base model; voice cloning needs a *-Base checkpoint");
-        }
         if !model.has_text_processor() {
             bail!("{model_name}: no text tokenizer found in {}", dir.display());
         }
@@ -249,5 +267,33 @@ impl TtsBackend for QwenBackend {
 
     fn count_tokens(&self, text: &str) -> Option<usize> {
         self.model.text_processor().map(|p| p.tokenize(text).len())
+    }
+
+    fn generate_voice_design(
+        &mut self,
+        text: &str,
+        language: &str,
+        description: &str,
+        temperature: f64,
+        top_p: f64,
+        seed: u64,
+    ) -> Result<Wave> {
+        let processor = self
+            .model
+            .text_processor()
+            .ok_or_else(|| anyhow!("no text tokenizer loaded"))?;
+        let ids = processor.tokenize_instruct(description);
+        let n = ids.len();
+        let instruct_ids = Tensor::from_vec(ids, (1, n), &self.device)?;
+        // As qwen_tts' generate_voice_design_full: the description is the
+        // instruction, non-streaming prompt layout.
+        let options = GenerationOptions {
+            language: language.to_lowercase(),
+            instruct: Some(description.to_string()),
+            instruct_ids: Some(instruct_ids),
+            non_streaming_mode: true,
+            ..Default::default()
+        };
+        self.run(text, options, temperature, top_p, seed)
     }
 }

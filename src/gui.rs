@@ -32,7 +32,7 @@ use crate::config::{self, Config, Settings};
 use crate::logging;
 use crate::pipeline::{self, SegmentsByProject};
 use crate::review::{self, ReviewStore};
-use crate::tts::TtsEngine;
+use crate::tts::{TtsEngine, voice};
 
 const MAX_LOG_CHARS: usize = 400_000;
 
@@ -198,6 +198,7 @@ impl SettingsForm {
                             "Precision (GPU)",
                             Some(strings(config::TTS_DTYPE_CHOICES)),
                         ),
+                        field("VOICE_DESIGN_MODEL", "Voice design model", None),
                         field("TTS_MAX_TOKENS", "Max tokens per chunk", None),
                         field(
                             "TTS_MAX_WORDS_FALLBACK",
@@ -425,6 +426,34 @@ impl ReviewSession {
     }
 }
 
+/// The "Voice" panel: where the narrator voice comes from.
+struct VoiceForm {
+    /// "file", "design" or "random" (see `config::VOICE_SOURCE_CHOICES`).
+    source: String,
+    file: String,
+    description: String,
+    /// What `cache/voice_reference.wav` currently is.
+    status: String,
+}
+
+impl VoiceForm {
+    fn new(cfg: &Config) -> Self {
+        Self {
+            source: voice::source(&cfg.settings).to_string(),
+            file: cfg.settings.voice_reference_file.clone(),
+            description: cfg.settings.narrator_prompt.clone(),
+            status: voice::describe(&cfg.paths),
+        }
+    }
+
+    /// The form differs from the saved settings.
+    fn changed(&self, s: &Settings) -> bool {
+        self.source != voice::source(s)
+            || self.file != s.voice_reference_file
+            || self.description != s.narrator_prompt
+    }
+}
+
 pub struct App {
     review: Option<ReviewSession>,
     /// Stage 2 was requested while spots are open: number of open spots.
@@ -435,7 +464,7 @@ pub struct App {
     output_dir: PathBuf,
     projects: Vec<ProjectRow>,
     segments: SegmentsByProject,
-    voice_prompt: String,
+    voice: VoiceForm,
     quick: QuickConfig,
     settings_form: Option<SettingsForm>,
     confirm_close: bool,
@@ -468,7 +497,7 @@ impl App {
             review: None,
             stage2_guard: None,
             skip_stage2_guard: false,
-            voice_prompt: cfg.settings.narrator_prompt.clone(),
+            voice: VoiceForm::new(&cfg),
             quick: QuickConfig::new(&cfg.settings),
             cfg,
             input_dir,
@@ -817,20 +846,32 @@ impl App {
         });
     }
 
-    fn regen_voice_reference(&mut self) {
+    /// Save the Voice panel and make the voice reference in the background.
+    /// `next_seed`: a new random voice (voice seed + 1).
+    fn apply_voice(&mut self, next_seed: bool) {
+        let seed = (self.cfg.settings.voice_seed + u64::from(next_seed)).to_string();
+        let fields = [
+            ("VOICE_SOURCE", self.voice.source.as_str()),
+            ("VOICE_REFERENCE_FILE", self.voice.file.as_str()),
+            ("NARRATOR_PROMPT", self.voice.description.as_str()),
+            ("VOICE_SEED", seed.as_str()),
+        ];
+        let applied = apply_fields(&mut self.cfg.settings, fields.into_iter(), "Voice");
+        if let Err(e) = config::save_settings_to_file(&applied, &self.cfg.paths.settings_file()) {
+            log::error!("Could not save settings: {e:#}");
+        }
+        self.quick = QuickConfig::new(&self.cfg.settings);
         self.reset_progress();
-        log::info!("Regenerating voice reference...");
+        log::info!("Preparing the narrator voice...");
         self.spawn(move |cfg, _stop, shared| {
-            match TtsEngine::regenerate_voice_reference(&cfg.settings, &cfg.paths) {
-                Ok(p) => {
+            match TtsEngine::prepare_voice(&cfg.settings, &cfg.paths) {
+                Ok(_) => {
                     shared.set_progress(1.0);
-                    log::info!(
-                        "Voice reference saved to {}. Delete existing chunks and re-run Stage 2 to apply.",
-                        p.display()
-                    );
+                    log::info!("Narrator voice ready: {}", voice::describe(&cfg.paths));
                 }
-                Err(e) => log::error!("Voice reference generation failed: {e:#}"),
+                Err(e) => log::error!("Could not prepare the voice: {e:#}"),
             }
+            shared.push(Event::RefreshProjects);
         });
     }
 
@@ -966,6 +1007,7 @@ impl App {
             log::error!("Could not save settings: {e:#}");
         }
         self.quick = QuickConfig::new(&self.cfg.settings);
+        self.voice = VoiceForm::new(&self.cfg);
         log::info!("Settings saved and applied.");
     }
 
@@ -976,6 +1018,7 @@ impl App {
         self.cfg.settings = defaults;
         self.settings_form = Some(SettingsForm::new(&self.cfg.settings));
         self.quick = QuickConfig::new(&self.cfg.settings);
+        self.voice = VoiceForm::new(&self.cfg);
         logging::set_levels(
             &self.cfg.settings.log_level_console,
             &self.cfg.settings.log_level_file,
@@ -1007,7 +1050,10 @@ impl App {
             match e {
                 Event::Stage1Done(segs) => self.on_stage1_done(segs),
                 Event::Stage2Done => {}
-                Event::RefreshProjects => self.refresh_project_list(),
+                Event::RefreshProjects => {
+                    self.refresh_project_list();
+                    self.voice.status = voice::describe(&self.cfg.paths);
+                }
             }
         }
     }
@@ -1109,33 +1155,98 @@ impl App {
 
     fn side_panels_ui(&mut self, ui: &mut egui::Ui) {
         let busy = self.busy();
-        egui::CollapsingHeader::new(RichText::new("Voice Description").strong())
-            .default_open(false)
+        egui::CollapsingHeader::new(RichText::new("Voice").strong())
+            .default_open(true)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("Reset Default").clicked() {
-                        self.voice_prompt = config::DEFAULT_NARRATOR_PROMPT.to_string();
+                let hint = |ui: &mut egui::Ui, text: &str| {
+                    ui.label(RichText::new(text).small().color(Color32::GRAY));
+                };
+                ui.add_enabled_ui(!busy, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.radio_value(&mut self.voice.source, "file".to_string(), "Recording");
+                        ui.radio_value(
+                            &mut self.voice.source,
+                            "design".to_string(),
+                            "From description",
+                        );
+                        ui.radio_value(&mut self.voice.source, "random".to_string(), "Random");
+                    });
+                    match self.voice.source.as_str() {
+                        "file" => {
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.voice.file)
+                                        .hint_text("path to a WAV file")
+                                        .desired_width(ui.available_width() - 80.0),
+                                );
+                                if ui.button("Browse").clicked()
+                                    && let Some(p) = rfd::FileDialog::new()
+                                        .add_filter("WAV", &["wav", "WAV"])
+                                        .pick_file()
+                                {
+                                    self.voice.file = p.to_string_lossy().to_string();
+                                }
+                            });
+                            hint(
+                                ui,
+                                "10–15 s of clear speech by one speaker, no music (WAV). \
+                                 Works with both models; longer files are cut to 20 s.",
+                            );
+                        }
+                        "design" => {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.voice.description)
+                                    .desired_rows(4)
+                                    .desired_width(f32::INFINITY),
+                            );
+                            if ui.small_button("Reset Default").clicked() {
+                                self.voice.description =
+                                    config::DEFAULT_NARRATOR_PROMPT.to_string();
+                            }
+                            hint(
+                                ui,
+                                "Made once by the extra model Qwen3-TTS 1.7B VoiceDesign \
+                                 (about 4 GB download, loaded only for this). Its sample is \
+                                 then cloned by the selected model (0.6B or 1.7B).",
+                            );
+                        }
+                        _ => {
+                            hint(
+                                ui,
+                                &format!(
+                                    "The selected model invents a voice; the voice seed ({}) \
+                                     decides which.",
+                                    self.cfg.settings.voice_seed
+                                ),
+                            );
+                        }
                     }
-                    if ui
-                        .add_enabled(!busy, egui::Button::new("Regen Voice Ref"))
-                        .clicked()
-                    {
-                        self.regen_voice_reference();
-                    }
+                    ui.label(format!("Current voice: {}", self.voice.status));
+                    ui.horizontal(|ui| {
+                        let changed = self.voice.changed(&self.cfg.settings);
+                        let apply = egui::Button::new("Apply Voice");
+                        let apply = if changed { apply.fill(GREEN) } else { apply };
+                        if ui
+                            .add(apply)
+                            .on_hover_text("Save the choice and make the voice reference now")
+                            .clicked()
+                        {
+                            self.apply_voice(false);
+                        }
+                        if self.voice.source == "random"
+                            && ui
+                                .button("New Random Voice")
+                                .on_hover_text("Next voice seed")
+                                .clicked()
+                        {
+                            self.apply_voice(true);
+                        }
+                    });
+                    hint(
+                        ui,
+                        "With a new voice, '2. Generate Audio' speaks the chunks again.",
+                    );
                 });
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.voice_prompt)
-                        .desired_rows(5)
-                        .desired_width(f32::INFINITY),
-                );
-                ui.label(
-                    RichText::new(
-                        "The Base models clone cache/voice_reference.wav; replace that file \
-                         to change the narrator.",
-                    )
-                    .small()
-                    .color(Color32::GRAY),
-                );
             });
         egui::CollapsingHeader::new(RichText::new("Quick Config").strong())
             .default_open(false)
@@ -1762,7 +1873,8 @@ mod tests {
         let form = SettingsForm::new(&Settings::default());
         let keys: Vec<&str> = form.fields().map(|f| f.key).collect();
         for k in config::SETTINGS_KEYS {
-            if *k != "NARRATOR_PROMPT" {
+            // Set in the Voice panel.
+            if !["NARRATOR_PROMPT", "VOICE_SOURCE", "VOICE_REFERENCE_FILE"].contains(k) {
                 assert!(keys.contains(k), "{k} missing");
             }
         }
