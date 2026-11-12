@@ -1086,13 +1086,8 @@ impl App {
             self.log_text.push('\n');
             added = true;
         }
-        if added && self.log_text.len() > MAX_LOG_CHARS {
-            let cut = self.log_text.len() - MAX_LOG_CHARS;
-            let cut = self.log_text[cut..]
-                .find('\n')
-                .map(|i| cut + i + 1)
-                .unwrap_or(cut);
-            self.log_text.drain(..cut);
+        if added {
+            trim_log(&mut self.log_text, MAX_LOG_CHARS);
         }
         let events: Vec<Event> = std::mem::take(&mut *self.shared.events.lock().unwrap());
         for e in events {
@@ -1843,6 +1838,19 @@ impl App {
     }
 }
 
+/// Drop whole lines from the front of the log until at most `max` bytes are
+/// left. The cut is moved to a char boundary first: slicing inside an umlaut
+/// (e.g. in a project name that every chunk path repeats) used to panic and
+/// take the whole GUI down.
+fn trim_log(text: &mut String, max: usize) {
+    if text.len() <= max {
+        return;
+    }
+    let cut = text.ceil_char_boundary(text.len() - max);
+    let cut = text[cut..].find('\n').map_or(cut, |i| cut + i + 1);
+    text.drain(..cut);
+}
+
 /// Progress label "Chunk 3 / 10  (ETA ~1m 5s)".
 fn progress_label(done: usize, total: usize, start: Option<Instant>) -> String {
     if total == 0 {
@@ -1923,6 +1931,27 @@ mod tests {
             assert_eq!((icon.width, icon.height), (size, size));
             assert_eq!(icon.rgba.len(), (size * size * 4) as usize);
         }
+    }
+
+    #[test]
+    fn log_trim_never_cuts_inside_an_umlaut() {
+        let log = "INFO | Denoising: Übersetzung/chunk_1.wav\n\
+                   DEBUG | Post-processing complete: Übersetzung wörtlicher/chunk_1.wav\n\
+                   INFO | ✓ fertig\n";
+        // Every cut position, including the bytes inside 'Ü', 'ö' and '✓'.
+        for max in 0..=log.len() {
+            let mut t = log.to_string();
+            trim_log(&mut t, max);
+            assert!(t.len() <= max, "max {max}: {t:?}");
+            assert!(log.ends_with(&t));
+            // Only whole lines are kept.
+            assert!(
+                t.is_empty() || t.len() == log.len() || log[..log.len() - t.len()].ends_with('\n')
+            );
+        }
+        let mut t = log.to_string();
+        trim_log(&mut t, 20);
+        assert_eq!(t, "INFO | ✓ fertig\n");
     }
 
     #[test]
