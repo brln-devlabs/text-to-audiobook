@@ -1235,13 +1235,28 @@ impl App {
                 });
             });
         });
-        ui.horizontal(|ui| {
-            let p = *self.shared.progress.lock().unwrap();
-            let label = self.shared.label.lock().unwrap().clone();
-            let w = (ui.available_width() - 200.0).max(100.0);
-            ui.add(egui::ProgressBar::new(p).desired_width(w));
-            ui.label(label);
-        });
+        // Full-width bar in a frame; chunk count / ETA and percentage inside.
+        let p = *self.shared.progress.lock().unwrap();
+        let label = self.shared.label.lock().unwrap().clone();
+        let pct = (p * 100.0).round() as u32;
+        let text = if label.is_empty() {
+            format!("{pct} %")
+        } else {
+            format!("{label}    {pct} %")
+        };
+        egui::Frame::new()
+            .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+            .corner_radius(4.0)
+            .inner_margin(2.0)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::ProgressBar::new(p)
+                        .desired_width(ui.available_width())
+                        .desired_height(18.0)
+                        .corner_radius(3.0)
+                        .text(text),
+                );
+            });
     }
 
     fn log_ui(&mut self, ui: &mut egui::Ui) {
