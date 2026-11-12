@@ -204,6 +204,18 @@ fn keep_choice(original: &str) -> Choice {
     }
 }
 
+/// True if `before` ends with "<number>, " (the spot ends a list of numbers).
+fn after_number_in_list(before: &str) -> bool {
+    let Some(rest) = before.trim_end().strip_suffix(',') else {
+        return false;
+    };
+    let word = rest.rsplit(char::is_whitespace).next().unwrap_or("");
+    !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == ',' || c == '.')
+}
+
 pub fn find_spots(text: &str) -> Vec<Spot> {
     let mut spots = Vec::new();
 
@@ -224,6 +236,10 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
             continue;
         }
         if is_month(next) || next == "Uhr" {
+            continue;
+        }
+        // Last number of a list or table row: "GPT-3, 30, 25, 13. Berühmte …"
+        if after_number_in_list(before) {
             continue;
         }
         let (p1, p2) = prev_words(text, m.start());
@@ -673,5 +689,14 @@ mod tests {
         }
         // Rulers are still asked.
         assert!(!find_spots("Damals dankte Karl V. ab.").is_empty());
+    }
+
+    #[test]
+    fn last_number_of_a_table_row_is_not_asked() {
+        let t = "Open-Source-Lizenzen (n=42), GPT-3 DaVinci v2, 30, 25, 25, 13. Berühmte Reden (n=100), GPT-3 DaVinci Original, 20, 1, 14, 0. Berühmte Reden (n=100), GPT-3 DaVinci v2, 12, 6, 11, 3. Berühmte Monologe";
+        assert!(find_spots(t).is_empty(), "{:?}", find_spots(t));
+        assert!(find_spots("Werte: 0,5, 1,25, 13. Danach").is_empty());
+        // Without a list in front it is still asked.
+        assert!(!find_spots("Sie kam als 3. ins Ziel.").is_empty());
     }
 }
