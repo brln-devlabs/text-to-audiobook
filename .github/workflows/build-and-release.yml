@@ -103,6 +103,8 @@ jobs:
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       # Static C runtime (.cargo/config.toml), so no Visual C++
       # Redistributable is needed on the target PC.
