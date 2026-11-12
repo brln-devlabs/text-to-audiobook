@@ -62,7 +62,8 @@ Ausgabeordner der Python-Version werden weiterverwendet.
 - **Unsichere Zahlen prüfen** (`REVIEW_NUMBERS = true`, zusätzlich zu `NORMALIZE_NUMBERS`):
   Stellen, die die Regeln nicht sicher entscheiden können, also Ordnungszahlen ohne
   eindeutiges Wort davor („Sie kam als 3. ins Ziel“, „Er wurde 3.“) und römische Zahlen
-  außerhalb der sicheren Muster („Heinrich IV.“, „Ludwig XIV“), werden gesammelt. Nach
+  außerhalb der sicheren Muster („Heinrich IV.“, „Ludwig XIV“), werden gesammelt. Initialen in Namenslisten („Foster, C., Phang, J.“) gelten nicht als
+  römische Zahl. Nach
   „1. Prepare Segments“ öffnet sich das Fenster „Review Numbers“ und zeigt jede Stelle im
   Satz mit Vorschlägen („dritte“, „dritten“, „Dritter“, „drei.“, „der Vierte“, „des
   Vierten“ …). Ein Klick übernimmt den Vorschlag und springt zur nächsten Stelle; mit

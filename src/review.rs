@@ -267,6 +267,11 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
         if raw_prev.is_some_and(|p| ROMAN_KEYWORDS.contains(&p)) {
             continue; // "Kapitel IV" is decided by the rules
         }
+        // "Foster, C., Phang, J." / "Pinto, H. P.": initials in a list of
+        // names ("Lastname, X."), never a Roman numeral.
+        if word.len() == 1 && dot && text[..num.start()].trim_end().ends_with(',') {
+            continue;
+        }
         let after = &text[num.end() + c[2].len()..];
         let next = NEXT_WORD
             .captures(after)
@@ -655,5 +660,18 @@ mod tests {
         let kept =
             crate::normalize_de::unprotect(&crate::normalize_de::normalize(&store.apply(0, text)));
         assert_eq!(kept, text);
+    }
+
+    #[test]
+    fn initials_in_reference_lists_are_not_asked() {
+        for t in [
+            "Gao, L., Biderman, S., Hoppe, T., Foster, C., Phang, J., He, H.",
+            "Chen, M., Pinto, H. P. de O., Kaplan, J. (2021).",
+            "Lin, X. V., et al. (2022).",
+        ] {
+            assert!(find_spots(t).is_empty(), "{t}: {:?}", find_spots(t));
+        }
+        // Rulers are still asked.
+        assert!(!find_spots("Damals dankte Karl V. ab.").is_empty());
     }
 }
