@@ -440,13 +440,22 @@ impl Paths {
         }
     }
 
-    /// Root from `TTA_ROOT`, otherwise the current working directory.
+    /// Root from `TTA_ROOT`; otherwise the current directory if it is a
+    /// project folder (see [`is_project_root`]), otherwise the folder in the
+    /// user's documents ([`default_user_root`]).
+    ///
+    /// Installed copies are started from the start menu or a desktop icon,
+    /// with an arbitrary (often read-only) working directory; they end up in
+    /// the documents folder. Starting the program in a project folder, as
+    /// before, keeps using that folder.
     pub fn from_env() -> Self {
-        let root = std::env::var_os("TTA_ROOT")
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| PathBuf::from("."));
-        Self::new(root)
+        Self::new(choose_root(
+            std::env::var_os("TTA_ROOT")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+            std::env::current_dir().ok(),
+            default_user_root(),
+        ))
     }
 
     /// Create input/output/cache/logs/models if they are missing.
@@ -483,6 +492,39 @@ impl Paths {
     pub fn project_cache_dir(&self, project: &str) -> PathBuf {
         self.cache_dir.join(project)
     }
+}
+
+/// Name of the project folder in the user's documents.
+pub const USER_ROOT_DIR_NAME: &str = "text-to-audiobook";
+
+/// `Documents/text-to-audiobook` (Windows: the "Documents" known folder,
+/// Linux: `XDG_DOCUMENTS_DIR`, falling back to the home directory).
+pub fn default_user_root() -> Option<PathBuf> {
+    dirs::document_dir()
+        .or_else(dirs::home_dir)
+        .map(|d| d.join(USER_ROOT_DIR_NAME))
+}
+
+/// A folder the program was started in on purpose: it has `settings.json`
+/// or an `input/` folder.
+pub fn is_project_root(dir: &Path) -> bool {
+    dir.join("settings.json").is_file() || dir.join("input").is_dir()
+}
+
+/// `TTA_ROOT` > current directory if it is a project folder > user default >
+/// current directory.
+fn choose_root(
+    tta_root: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+    user_default: Option<PathBuf>,
+) -> PathBuf {
+    if let Some(root) = tta_root {
+        return root;
+    }
+    if let Some(cwd) = cwd.as_ref().filter(|d| is_project_root(d)) {
+        return cwd.clone();
+    }
+    user_default.or(cwd).unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Everything a pipeline run needs to know: directory layout plus a snapshot
@@ -568,5 +610,30 @@ mod tests {
         let reset = reset_to_defaults(&path);
         assert_eq!(reset, Settings::default());
         assert_eq!(Settings::load(&path), Settings::default());
+    }
+
+    #[test]
+    fn root_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        let plain = dir.path().join("plain");
+        let docs = dir.path().join("docs/text-to-audiobook");
+        std::fs::create_dir_all(project.join("input")).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        let some = |p: &Path| Some(p.to_path_buf());
+
+        // TTA_ROOT always wins
+        let env = dir.path().join("env");
+        assert_eq!(choose_root(some(&env), some(&project), some(&docs)), env);
+        // started in a project folder (input/ or settings.json)
+        assert_eq!(choose_root(None, some(&project), some(&docs)), project);
+        std::fs::write(plain.join("settings.json"), "{}").unwrap();
+        assert_eq!(choose_root(None, some(&plain), some(&docs)), plain);
+        std::fs::remove_file(plain.join("settings.json")).unwrap();
+        // started anywhere else: the documents folder
+        assert_eq!(choose_root(None, some(&plain), some(&docs)), docs);
+        // no documents/home folder: the current directory as before
+        assert_eq!(choose_root(None, some(&plain), None), plain);
+        assert_eq!(choose_root(None, None, None), PathBuf::from("."));
     }
 }

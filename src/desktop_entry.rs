@@ -19,8 +19,10 @@
 //! name matches the window's app ID and takes the icon from there (GNOME does
 //! the same for X11 windows via `StartupWMClass`). The GUI therefore writes
 //! `~/.local/share/applications/text-to-audiobook.desktop` and the icon at
-//! start. The entry starts the running binary in the current project folder.
+//! start. The entry starts the running binary in the current project folder
+//! (for an AppImage: the AppImage file, not its temporary mount).
 //! An entry without our marker key was written by the user and is left alone.
+//! Installed from a package (`/usr/bin`), the package brings its own entry.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -45,13 +47,17 @@ pub fn install_for_current_user(project_root: &Path, icon_png: &[u8]) {
         log::debug!("desktop entry skipped: neither XDG_DATA_HOME nor HOME set");
         return;
     };
-    let exe = match std::env::current_exe() {
+    let exe = match appimage_path().map_or_else(std::env::current_exe, Ok) {
         Ok(p) => p,
         Err(e) => {
             log::debug!("desktop entry skipped: {e}");
             return;
         }
     };
+    if exe.starts_with("/usr/") && system_entry_exists(&data_dirs()) {
+        log::debug!("desktop entry skipped: installed with its own entry");
+        return;
+    }
     let root = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
     let (Some(exe), Some(root)) = (exe.to_str(), root.to_str()) else {
         log::debug!("desktop entry skipped: path is not UTF-8");
@@ -69,6 +75,31 @@ pub fn install_for_current_user(project_root: &Path, icon_png: &[u8]) {
         ),
         Err(e) => log::warn!("desktop entry not written: {e}"),
     }
+}
+
+/// The AppImage file when running from one (its runtime sets `APPIMAGE`;
+/// `current_exe` would be inside a mount that changes on every start).
+fn appimage_path() -> Option<PathBuf> {
+    std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.is_file())
+}
+
+/// `$XDG_DATA_DIRS`, else `/usr/local/share:/usr/share`.
+fn data_dirs() -> Vec<PathBuf> {
+    let dirs = std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|d| !d.trim().is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    dirs.split(':')
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// A package installed `<dir>/applications/text-to-audiobook.desktop`.
+fn system_entry_exists(dirs: &[PathBuf]) -> bool {
+    dirs.iter().any(|d| desktop_file(d).is_file())
 }
 
 /// `$XDG_DATA_HOME`, else `~/.local/share`.
@@ -229,6 +260,16 @@ mod tests {
         assert_eq!(moved, Outcome::Written);
         let text = std::fs::read_to_string(desktop_file(data)).unwrap();
         assert!(text.contains("\nPath=/home/u/Neu\n"));
+    }
+
+    #[test]
+    fn package_entry_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = vec![dir.path().join("a"), dir.path().join("b")];
+        assert!(!system_entry_exists(&dirs));
+        std::fs::create_dir_all(dirs[1].join("applications")).unwrap();
+        std::fs::write(desktop_file(&dirs[1]), "[Desktop Entry]\n").unwrap();
+        assert!(system_entry_exists(&dirs));
     }
 
     #[test]

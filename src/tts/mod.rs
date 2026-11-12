@@ -61,6 +61,25 @@ pub fn voice_ref_text(language: &str) -> &'static str {
     }
 }
 
+/// Models (Hugging Face ids or local directories) that the next
+/// [`TtsEngine::load`] needs and that are not on disk yet: the Base model,
+/// plus the VoiceDesign model while a voice from a description still has to
+/// be made. Empty in mock mode and without the `tts` feature.
+pub fn missing_models(settings: &Settings, paths: &Paths) -> Vec<String> {
+    if settings.mock_models || !cfg!(feature = "tts") {
+        return Vec::new();
+    }
+    let mut models = vec![settings.tts_model_name.trim().to_string()];
+    let language = resolve_language(settings, Some("english"));
+    let want = voice::wanted(settings, &language);
+    if want.source == "design" && voice::needs_update(paths, &want) {
+        models.push(settings.voice_design_model.trim().to_string());
+    }
+    models.retain(|m| !m.is_empty() && !crate::hub::tts_model_available(m));
+    models.dedup();
+    models
+}
+
 /// Language for Qwen3-TTS: `TTS_LANGUAGE`, or the segment's own detected
 /// language when `TTS_LANGUAGE` is "auto".
 pub fn resolve_language(settings: &Settings, segment_language: Option<&str>) -> String {

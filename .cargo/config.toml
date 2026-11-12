@@ -1,0 +1,12 @@
+# Windows: link the C runtime statically, so the program runs without the
+# "Microsoft Visual C++ Redistributable". esaxx-rs (via tokenizers) always
+# builds with the static runtime, so everything else has to match.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+# llama-cpp-sys-2: static runtime for llama.cpp as well (only affects MSVC)
+LLAMA_STATIC_CRT = "1"

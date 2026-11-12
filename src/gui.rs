@@ -33,7 +33,7 @@ use crate::logging;
 use crate::pipeline::{self, SegmentsByProject, Stage2Event};
 use crate::review::{self, ReviewStore};
 use crate::selection::{self, ProjectSelection};
-use crate::tts::{TtsEngine, voice};
+use crate::tts::{self, TtsEngine, voice};
 
 const MAX_LOG_CHARS: usize = 400_000;
 
@@ -93,6 +93,38 @@ enum Event {
     Stage1Done(SegmentsByProject),
     Stage2Done,
     RefreshProjects,
+    /// Model download finished (`Err` holds the message for the dialog).
+    DownloadDone(std::result::Result<(), String>),
+}
+
+/// What to start once the models are downloaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterDownload {
+    Stage2,
+    Voice,
+}
+
+/// Dialog that downloads missing models: shown at the first start and
+/// before a step that needs a model that is not on disk yet.
+struct DownloadDialog {
+    models: Vec<String>,
+    then: Option<AfterDownload>,
+    running: bool,
+    /// Closed while the download goes on (the main progress bar shows it).
+    hidden: bool,
+    error: Option<String>,
+}
+
+impl DownloadDialog {
+    fn new(models: Vec<String>, then: Option<AfterDownload>) -> Self {
+        Self {
+            models,
+            then,
+            running: false,
+            hidden: false,
+            error: None,
+        }
+    }
 }
 
 /// State shared with worker threads.
@@ -491,6 +523,7 @@ pub struct App {
     /// App icon shown next to the title (None if the PNG could not be read).
     logo: Option<egui::TextureHandle>,
     review: Option<ReviewSession>,
+    download: Option<DownloadDialog>,
     /// Stage 2 was requested while spots are open: number of open spots.
     stage2_guard: Option<usize>,
     skip_stage2_guard: bool,
@@ -534,6 +567,7 @@ impl App {
         let mut app = Self {
             logo,
             review: None,
+            download: None,
             stage2_guard: None,
             skip_stage2_guard: false,
             voice: VoiceForm::new(&cfg),
@@ -557,6 +591,10 @@ impl App {
         };
         app.refresh_project_list();
         app.check_existing_segments();
+        let missing = tts::missing_models(&app.cfg.settings, &app.cfg.paths);
+        if !missing.is_empty() {
+            app.download = Some(DownloadDialog::new(missing, None));
+        }
         app
     }
 
@@ -828,6 +866,9 @@ impl App {
                 return;
             }
         }
+        if self.offer_download(AfterDownload::Stage2) {
+            return;
+        }
         let skipped: Vec<&String> = self
             .segments
             .keys()
@@ -943,6 +984,14 @@ impl App {
             log::error!("Could not save settings: {e:#}");
         }
         self.quick = QuickConfig::new(&self.cfg.settings);
+        if self.offer_download(AfterDownload::Voice) {
+            return;
+        }
+        self.prepare_voice();
+    }
+
+    /// Make the voice reference in the background.
+    fn prepare_voice(&mut self) {
         self.reset_progress();
         log::info!("Preparing the narrator voice...");
         self.spawn(move |cfg, _stop, shared| {
@@ -955,6 +1004,197 @@ impl App {
             }
             shared.push(Event::RefreshProjects);
         });
+    }
+
+    // ---------------------------------------------------------------
+    // Model download
+    // ---------------------------------------------------------------
+
+    /// Open the download dialog if `then` needs models that are not on disk
+    /// yet. True: `then` starts after the download instead of now.
+    fn offer_download(&mut self, then: AfterDownload) -> bool {
+        let missing = tts::missing_models(&self.cfg.settings, &self.cfg.paths);
+        if missing.is_empty() {
+            return false;
+        }
+        log::info!("Model(s) to download first: {}", missing.join(", "));
+        self.download = Some(DownloadDialog::new(missing, Some(then)));
+        true
+    }
+
+    fn start_download(&mut self) {
+        let Some(dialog) = self.download.as_mut() else {
+            return;
+        };
+        if self.shared.busy.load(Ordering::SeqCst) {
+            return;
+        }
+        dialog.running = true;
+        dialog.hidden = false;
+        dialog.error = None;
+        let models = dialog.models.clone();
+        self.reset_progress();
+        self.spawn(move |_cfg, _stop, shared| {
+            let n = models.len();
+            let mut result = Ok(());
+            for (i, model) in models.iter().enumerate() {
+                let which = if n > 1 {
+                    format!("Model {}/{n}", i + 1)
+                } else {
+                    "Model".to_string()
+                };
+                shared.set_label(format!("{which}: connecting to Hugging Face ..."));
+                let on_progress = |p: &crate::hub::DownloadProgress| {
+                    shared.set_progress(p.fraction());
+                    if p.total > 0 {
+                        shared.set_label(format!(
+                            "{which}: {} of {} ({:.0} %)",
+                            crate::hub::human_size(p.done),
+                            crate::hub::human_size(p.total),
+                            p.fraction() * 100.0
+                        ));
+                    }
+                };
+                if let Err(e) = crate::hub::download_tts_model(model, Some(&on_progress)) {
+                    log::error!("Download of {model} failed: {e:#}");
+                    result = Err(format!("{e:#}"));
+                    break;
+                }
+            }
+            if result.is_ok() {
+                shared.set_progress(1.0);
+                shared.set_label("Models downloaded");
+                log::info!("All models downloaded.");
+            }
+            shared.push(Event::DownloadDone(result));
+        });
+    }
+
+    fn on_download_done(&mut self, result: std::result::Result<(), String>) {
+        let Some(dialog) = self.download.as_mut() else {
+            return;
+        };
+        dialog.running = false;
+        match result {
+            Ok(()) => {
+                let then = dialog.then;
+                self.download = None;
+                match then {
+                    Some(AfterDownload::Stage2) => {
+                        // The review check already ran before the download.
+                        self.skip_stage2_guard = self.review_enabled();
+                        self.start_stage2();
+                    }
+                    Some(AfterDownload::Voice) => self.prepare_voice(),
+                    None => {}
+                }
+            }
+            Err(msg) => {
+                dialog.error = Some(msg);
+                dialog.hidden = false;
+            }
+        }
+    }
+
+    fn download_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.download.as_ref() else {
+            return;
+        };
+        if dialog.hidden {
+            return;
+        }
+        let running = dialog.running;
+        let models = dialog.models.join("\n");
+        let error = dialog.error.clone();
+        let then = dialog.then;
+        let progress = *self.shared.progress.lock().unwrap();
+        let label = self.shared.label.lock().unwrap().clone();
+        let busy_elsewhere = !running && self.busy();
+        let mut action = None;
+        let modal = egui::Modal::new(egui::Id::unique("model_download")).show(ctx, |ui| {
+            ui.set_width(480.0);
+            ui.heading("Download the speech model");
+            ui.add_space(6.0);
+            ui.label(match then {
+                None => "Before the first audiobook the program needs this speech model:",
+                Some(_) => "This step needs a speech model that is not on this computer yet:",
+            });
+            ui.label(RichText::new(models).strong());
+            ui.add_space(6.0);
+            ui.label(format!(
+                "It is downloaded once from Hugging Face (several GB) and stored in\n{}\n\
+                 Depending on the connection this takes a while. If the download is \
+                 interrupted (or the program is closed), it continues where it stopped \
+                 the next time.",
+                crate::hub::model_cache_dir().display()
+            ));
+            ui.add_space(10.0);
+            if running {
+                ui.add(
+                    egui::ProgressBar::new(progress)
+                        .show_percentage()
+                        .animate(true),
+                );
+                ui.label(RichText::new(label).color(Color32::GRAY));
+                ui.add_space(8.0);
+                if ui
+                    .button("Hide")
+                    .on_hover_text("The download goes on; the progress bar at the bottom shows it")
+                    .clicked()
+                {
+                    action = Some("hide");
+                }
+                return;
+            }
+            if let Some(err) = &error {
+                ui.label(
+                    RichText::new(format!(
+                        "The download failed:\n{err}\n\nCheck the internet connection and \
+                         try again."
+                    ))
+                    .color(Color32::from_rgb(0xe0, 0x60, 0x60)),
+                );
+                ui.add_space(8.0);
+            }
+            ui.horizontal(|ui| {
+                let start = if error.is_some() {
+                    "Try again"
+                } else {
+                    "Download now"
+                };
+                if ui
+                    .add_enabled(!busy_elsewhere, egui::Button::new(start).fill(GREEN))
+                    .clicked()
+                {
+                    action = Some("start");
+                }
+                let close = if then.is_none() { "Later" } else { "Cancel" };
+                if ui.button(close).clicked() {
+                    action = Some("close");
+                }
+            });
+        });
+        if modal.should_close() && action.is_none() {
+            action = Some(if running { "hide" } else { "close" });
+        }
+        match action {
+            Some("start") => self.start_download(),
+            Some("hide") => {
+                if let Some(d) = self.download.as_mut() {
+                    d.hidden = true;
+                }
+            }
+            Some("close") => {
+                self.download = None;
+                if then.is_none() {
+                    log::info!(
+                        "Model download postponed; it is offered again before the first \
+                         audio is made."
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 
     fn request_stop(&mut self) {
@@ -1131,6 +1371,7 @@ impl App {
                     self.refresh_project_list();
                     self.voice.status = voice::describe(&self.cfg.paths);
                 }
+                Event::DownloadDone(result) => self.on_download_done(result),
             }
         }
     }
@@ -1178,6 +1419,22 @@ impl App {
                     };
                     ui.label(RichText::new(dir.display().to_string()).color(Color32::GRAY));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button("Open")
+                            .on_hover_text("Show this folder in the file manager")
+                            .clicked()
+                        {
+                            let dir = if is_input {
+                                &self.input_dir
+                            } else {
+                                &self.output_dir
+                            };
+                            if let Err(e) = std::fs::create_dir_all(dir)
+                                .and_then(|()| open_in_file_manager(dir))
+                            {
+                                log::warn!("Could not open {}: {e}", dir.display());
+                            }
+                        }
                         if ui.add_enabled(!busy, egui::Button::new("Browse")).clicked() {
                             let start = if is_input {
                                 &self.input_dir
@@ -1241,8 +1498,15 @@ impl App {
                 .show(ui, |ui| {
                     if self.projects.is_empty() {
                         ui.label(
-                            RichText::new("(no projects found in this directory)")
-                                .color(Color32::GRAY),
+                            RichText::new(
+                                "(no projects found in this directory)\n\n\
+                                 Put your texts as Markdown (.md) files into the input \
+                                 directory: one file per book, or one folder per book \
+                                 with a file per chapter. \"Open\" next to \"Input \
+                                 Directory\" shows the folder, \"Refresh\" reloads the \
+                                 list.",
+                            )
+                            .color(Color32::GRAY),
                         );
                     }
                     for p in &mut self.projects {
@@ -2047,6 +2311,7 @@ impl eframe::App for App {
         self.settings_window(&ctx);
         self.review_window(&ctx);
         self.stage2_guard_dialog(&ctx);
+        self.download_dialog(&ctx);
         self.close_handling(&ctx);
     }
 }
