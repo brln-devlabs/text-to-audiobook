@@ -32,6 +32,7 @@ use crate::config::{self, Config, Settings};
 use crate::logging;
 use crate::pipeline::{self, SegmentsByProject};
 use crate::review::{self, ReviewStore};
+use crate::selection::{self, ProjectSelection};
 use crate::tts::{TtsEngine, voice};
 
 const MAX_LOG_CHARS: usize = 400_000;
@@ -465,6 +466,8 @@ pub struct App {
     input_dir: PathBuf,
     output_dir: PathBuf,
     projects: Vec<ProjectRow>,
+    /// Ticked projects, remembered in `cache/project_selection.json`.
+    selection: ProjectSelection,
     segments: SegmentsByProject,
     voice: VoiceForm,
     quick: QuickConfig,
@@ -501,6 +504,7 @@ impl App {
             skip_stage2_guard: false,
             voice: VoiceForm::new(&cfg),
             quick: QuickConfig::new(&cfg.settings),
+            selection: ProjectSelection::load(&cfg.paths.cache_dir),
             cfg,
             input_dir,
             output_dir,
@@ -538,12 +542,9 @@ impl App {
     // Projects and cache
     // ---------------------------------------------------------------
 
+    /// Ticked states come from the saved selection; new projects are ticked.
     fn refresh_project_list(&mut self) {
-        let previous: IndexMap<String, bool> = self
-            .projects
-            .iter()
-            .map(|p| (p.name.clone(), p.selected))
-            .collect();
+        let key = self.selection_key();
         self.projects = pipeline::discover_projects(&self.input_dir)
             .into_iter()
             .map(|p| {
@@ -558,11 +559,27 @@ impl App {
                 };
                 ProjectRow {
                     label: format!("{}{suffix}", p.name),
-                    selected: previous.get(&p.name).copied().unwrap_or(true),
+                    selected: self.selection.is_selected(&key, &p.name),
                     name: p.name,
                 }
             })
             .collect();
+        self.save_selection();
+    }
+
+    fn selection_key(&self) -> String {
+        selection::dir_key(&self.cfg.paths.root, &self.input_dir)
+    }
+
+    /// Remember the ticked projects of the current input directory.
+    fn save_selection(&mut self) {
+        let key = self.selection_key();
+        let rows = self.projects.iter().map(|p| (p.name.as_str(), p.selected));
+        if self.selection.set(&key, rows)
+            && let Err(e) = self.selection.save()
+        {
+            log::warn!("Could not save project selection: {e:#}");
+        }
     }
 
     fn check_existing_segments(&mut self) {
@@ -1111,9 +1128,11 @@ impl App {
         ui.horizontal(|ui| {
             if ui.button("Select All").clicked() {
                 self.projects.iter_mut().for_each(|p| p.selected = true);
+                self.save_selection();
             }
             if ui.button("Select None").clicked() {
                 self.projects.iter_mut().for_each(|p| p.selected = false);
+                self.save_selection();
             }
             if ui.button("Refresh").clicked() {
                 self.refresh_project_list();
@@ -1134,6 +1153,7 @@ impl App {
                 }
             });
         });
+        let mut toggled = false;
         egui::Frame::group(ui.style()).show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("projects")
@@ -1146,13 +1166,18 @@ impl App {
                         );
                     }
                     for p in &mut self.projects {
-                        ui.add_enabled(
-                            !busy,
-                            egui::Checkbox::new(&mut p.selected, p.label.as_str()),
-                        );
+                        toggled |= ui
+                            .add_enabled(
+                                !busy,
+                                egui::Checkbox::new(&mut p.selected, p.label.as_str()),
+                            )
+                            .changed();
                     }
                 });
         });
+        if toggled {
+            self.save_selection();
+        }
     }
 
     fn side_panels_ui(&mut self, ui: &mut egui::Ui) {
