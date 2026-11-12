@@ -21,7 +21,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, TryLockError};
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
@@ -99,6 +99,25 @@ struct State {
     gui: Option<GuiSink>,
 }
 
+impl State {
+    /// Send one record to the console (if `console`), the log file and the GUI.
+    fn write(&mut self, record: &Record, console: bool) {
+        let line = format_record(record);
+        if console && record.level() <= self.console_level {
+            eprintln!("{line}");
+        }
+        if record.level() <= self.file_level
+            && let Some(f) = self.file.as_mut()
+        {
+            f.write_line(&line);
+        }
+        // The GUI shows everything down to DEBUG, like the Python version.
+        if let Some(gui) = self.gui.as_ref().filter(|_| record.level() <= Level::Debug) {
+            gui(line);
+        }
+    }
+}
+
 struct Logger {
     state: Mutex<State>,
 }
@@ -166,23 +185,11 @@ impl Log for Logger {
         if !self.enabled(record.metadata()) || is_known_noise(record) {
             return;
         }
-        let line = format_record(record);
         let mut st = match self.state.lock() {
             Ok(st) => st,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if record.level() <= st.console_level {
-            eprintln!("{line}");
-        }
-        if record.level() <= st.file_level
-            && let Some(f) = st.file.as_mut()
-        {
-            f.write_line(&line);
-        }
-        // The GUI shows everything down to DEBUG, like the Python version.
-        if let Some(gui) = st.gui.as_ref().filter(|_| record.level() <= Level::Debug) {
-            gui(line);
-        }
+        st.write(record, true);
     }
 
     fn flush(&self) {
@@ -214,7 +221,37 @@ pub fn bootstrap(log_file: Option<&Path>) {
     }
     if log::set_logger(l).is_ok() {
         log::set_max_level(LevelFilter::Trace);
+        install_panic_hook();
     }
+}
+
+/// Also write panics to the log file and the GUI. The default hook only
+/// prints to stderr, which nobody sees when the GUI was started from a
+/// desktop launcher, so a crash left no trace in `pipeline.log`.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // try_lock: the panic may come from inside the logger itself.
+        let st = match logger().state.try_lock() {
+            Ok(st) => Some(st),
+            Err(TryLockError::Poisoned(p)) => Some(p.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        };
+        if let Some(mut st) = st {
+            let thread = std::thread::current();
+            let name = thread.name().unwrap_or("<unnamed>");
+            st.write(
+                &Record::builder()
+                    .level(Level::Error)
+                    .target("text_to_audiobook::panic")
+                    .args(format_args!("Crash in thread '{name}': {info}"))
+                    .build(),
+                // The default hook prints it to the console.
+                false,
+            );
+        }
+        default_hook(info);
+    }));
 }
 
 /// Send every formatted log line to `callback` as well (used by the GUI).
@@ -258,7 +295,10 @@ mod tests {
             "qwen_tts::nn::generation",
             "code_0 >= 2048 (invalid for decoder) step=257 token=2150"
         ));
-        assert!(!noise("qwen_tts::nn::generation", "something else went wrong"));
+        assert!(!noise(
+            "qwen_tts::nn::generation",
+            "something else went wrong"
+        ));
         assert!(!noise(
             "text_to_audiobook::tts",
             "code_0 >= 2048 (invalid for decoder)"
