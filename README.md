@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon.svg" width="128" alt="text-to-audiobook icon"></p>
+
 # text-to-audiobook - Advanced Text-to-Speech Application
 
 > **Fork:** angepasst für deutsche Texte, Absatzpausen und GPUs mit 4 GB VRAM. Details und Installationshinweise: [FORK_DE.md](FORK_DE.md)
@@ -122,6 +124,8 @@ Select the input and output directories, tick the stories and run the stages (th
 2. **Generate Audio** – synthesize every segment, optionally audit and regenerate failed chunks (`AUTO_CLEANUP`), denoise, assemble
 
 The audit and the assembly without TTS remain available on the command line (`cleanup`, `assemble`).
+
+The app icon lives in [`assets/`](assets/) and is set for the window, task bar and Dock; on Windows it is also embedded in the `.exe` (`build.rs`). Wayland task bars take it from a desktop entry: see [`assets/text-to-audiobook.desktop`](assets/text-to-audiobook.desktop) and [FORK_DE.md](FORK_DE.md#programm-icon).
 
 ### Command line
 

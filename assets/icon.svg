@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- text-to-audiobook: an open book, text lines on the left page turn into
+       a sound wave on the right page. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a7bd5"/>
+      <stop offset="1" stop-color="#5b2f91"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="wave" gradientUnits="userSpaceOnUse" x1="0" y1="86" x2="0" y2="166">
+      <stop offset="0" stop-color="#ffb347"/>
+      <stop offset="1" stop-color="#f06a2a"/>
+    </linearGradient>
+    <linearGradient id="pageL" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e6ecf7"/>
+    </linearGradient>
+    <linearGradient id="pageR" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e6ecf7"/>
+      <stop offset="1" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- background tile -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#shine)"/>
+
+  <!-- book cover peeking out below the pages -->
+  <path d="M30 86 V196 C70 188 106 192 128 208 C150 192 186 188 226 196 V86 Z"
+        fill="#1d1846" fill-opacity="0.55"/>
+
+  <!-- pages -->
+  <path d="M128 76 C106 62 72 58 40 64 V184 C72 178 106 182 128 196 Z" fill="url(#pageL)"/>
+  <path d="M128 76 C150 62 184 58 216 64 V184 C184 178 150 182 128 196 Z" fill="url(#pageR)"/>
+  <path d="M128 76 V196" stroke="#b9c6e0" stroke-width="3"/>
+
+  <!-- text lines (left page) -->
+  <g stroke="#4a64a8" stroke-width="8" stroke-linecap="round" fill="none">
+    <path d="M56 94 H112"/>
+    <path d="M56 114 H112"/>
+    <path d="M56 134 H112"/>
+    <path d="M56 154 H92"/>
+  </g>
+
+  <!-- sound wave (right page) -->
+  <g stroke="url(#wave)" stroke-width="8" stroke-linecap="round" fill="none">
+    <path d="M146 116 V136"/>
+    <path d="M160 102 V150"/>
+    <path d="M174 88 V164"/>
+    <path d="M188 100 V152"/>
+    <path d="M202 114 V138"/>
+  </g>
+</svg>

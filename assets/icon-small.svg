@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Simplified variant of icon.svg for 16 to 32 pixels: bigger book,
+       fewer and thicker strokes. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a7bd5"/>
+      <stop offset="1" stop-color="#5b2f91"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="4" y="4" width="248" height="248" rx="48" fill="url(#bg)"/>
+
+  <path d="M16 78 V212 C64 202 104 206 128 222 C152 206 192 202 240 212 V78 Z"
+        fill="#1d1846" fill-opacity="0.6"/>
+  <path d="M128 66 C102 50 62 46 26 52 V196 C62 190 102 194 128 210 Z" fill="#ffffff"/>
+  <path d="M128 66 C154 50 194 46 230 52 V196 C194 190 154 194 128 210 Z" fill="#ffffff"/>
+
+  <g stroke="#3f58a0" stroke-width="18" stroke-linecap="round" fill="none">
+    <path d="M50 96 H104"/>
+    <path d="M50 130 H104"/>
+    <path d="M50 164 H86"/>
+  </g>
+
+  <g stroke="#f07a28" stroke-width="20" stroke-linecap="round" fill="none">
+    <path d="M154 116 V146"/>
+    <path d="M182 88 V174"/>
+    <path d="M210 108 V154"/>
+  </g>
+</svg>
