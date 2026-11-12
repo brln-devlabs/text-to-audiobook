@@ -18,7 +18,9 @@
 //! Stage 1 cleans and chunks the text and lets a small Llama model tag
 //! emotions, language and chapters ([`llm`]). Stage 2 speaks every segment
 //! with Qwen3-TTS voice cloning ([`tts`]). Stage 3 audits the chunks and
-//! stage 4 joins them into WAV/MP3 files ([`audio`], [`pipeline`]).
+//! stage 4 joins them into WAV/MP3 files ([`audio`], [`pipeline`]). While
+//! stage 2 runs, a provisional MP3 of the chunks so far is kept up to date
+//! ([`preview`]).
 
 pub mod audio;
 pub mod cancel;
@@ -35,6 +37,7 @@ pub mod markdown_cleaner;
 pub mod natsort;
 pub mod normalize_de;
 pub mod pipeline;
+pub mod preview;
 pub mod pyval;
 pub mod review;
 pub mod segment;

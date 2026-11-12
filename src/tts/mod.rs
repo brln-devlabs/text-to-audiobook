@@ -199,6 +199,17 @@ pub fn spoken_text(
     out
 }
 
+/// What [`TtsEngine::process_all_with`] reports after every chunk.
+#[derive(Debug, Clone, Copy)]
+pub struct ChunkReady<'a> {
+    /// Segment index of the chunk.
+    pub index: usize,
+    /// Spoken just now (false: an existing WAV was reused).
+    pub synthesized: bool,
+    /// Every WAV so far in reading order, sub-parts included.
+    pub wavs: &'a [PathBuf],
+}
+
 pub struct TtsEngine {
     pub model_name: String,
     backend: Option<Box<dyn TtsBackend>>,
@@ -751,6 +762,22 @@ impl TtsEngine {
         stop: Option<&StopFlag>,
         chunk_done: Option<&(dyn Fn() + Sync)>,
     ) -> Result<Vec<PathBuf>> {
+        self.process_all_with(segments, output_dir, stop, &mut |_| {
+            if let Some(cb) = chunk_done {
+                cb();
+            }
+        })
+    }
+
+    /// [`Self::process_all`], calling `on_chunk` after every chunk (spoken
+    /// or reused) once its WAVs are complete on disk.
+    pub fn process_all_with(
+        &mut self,
+        segments: &[Segment],
+        output_dir: &Path,
+        stop: Option<&StopFlag>,
+        on_chunk: &mut dyn FnMut(ChunkReady),
+    ) -> Result<Vec<PathBuf>> {
         std::fs::create_dir_all(output_dir)?;
         Self::migrate_legacy_chunk_names(output_dir, segments.len());
         // Every chunk notes the voice it was spoken with.
@@ -814,9 +841,11 @@ impl TtsEngine {
                     self.anchor_path = existing.first().cloned();
                 }
                 wav_paths.extend(existing);
-                if let Some(cb) = chunk_done {
-                    cb();
-                }
+                on_chunk(ChunkReady {
+                    index: i,
+                    synthesized: false,
+                    wavs: &wav_paths,
+                });
                 continue;
             }
 
@@ -847,9 +876,11 @@ impl TtsEngine {
                 tags::tag_wav(w, seg);
             }
             wav_paths.extend(paths);
-            if let Some(cb) = chunk_done {
-                cb();
-            }
+            on_chunk(ChunkReady {
+                index: i,
+                synthesized: true,
+                wavs: &wav_paths,
+            });
             if (i + 1) % 20 == 0 {
                 log::info!("Checkpoint at chunk {}", i + 1);
             }
@@ -1000,16 +1031,22 @@ pub mod tests {
         for i in 0..2 {
             write_mono_wav(&out.join(format!("chunk_{i:06}.wav")), &[0.0; 10], 24000).unwrap();
         }
+        let mut reports = Vec::new();
         let wavs = engine
-            .process_all(
+            .process_all_with(
                 &segs(&[("First.", None), ("Second.", None), ("Third.", None)]),
                 &out,
                 None,
-                None,
+                &mut |c| reports.push((c.index, c.synthesized, c.wavs.to_vec())),
             )
             .unwrap();
         assert_eq!(wavs.len(), 3);
         assert_eq!(fake.clone_calls.lock().unwrap().len(), 1);
+        // Reused chunks are reported as such; each report has the WAVs so far.
+        let flags: Vec<(usize, bool)> = reports.iter().map(|r| (r.0, r.1)).collect();
+        assert_eq!(flags, [(0, false), (1, false), (2, true)]);
+        assert_eq!(reports[1].2, wavs[..2]);
+        assert_eq!(reports[2].2, wavs);
     }
 
     #[test]

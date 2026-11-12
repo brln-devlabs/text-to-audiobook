@@ -15,7 +15,8 @@
 
 //! The four stages:
 //! 1. prepare segments (clean, chunk, LLM analysis; cached per project)
-//! 2. generate audio (TTS per segment, denoise, assemble)
+//! 2. generate audio (TTS per segment, denoise, assemble); meanwhile a
+//!    provisional MP3 of the chunks so far is kept up to date ([`crate::preview`])
 //! 3. cleanup (audit chunks, delete failures, cut noise)
 //! 4. assemble final audio from existing chunks
 //!
@@ -33,12 +34,13 @@ use serde_json::{Value, json};
 use crate::audio::assembler::{assemble, chunk_id};
 use crate::audio::cleanup::{self, ProjectCleanup, Thresholds};
 use crate::audio::filter::denoise;
-use crate::cancel::{StopFlag, stopped};
+use crate::cancel::{StopFlag, forced, stopped};
 use crate::chunker::{Chunk, split_to_chunks};
 use crate::config::{Config, Settings};
 use crate::llm::{FilePreview, LlmNormalizer, ProjectHints};
 use crate::markdown_cleaner::{clean, clean_with, heading_text};
 use crate::natsort::{natsorted, natural_cmp};
+use crate::preview::{self, PreviewQueue};
 use crate::pyval;
 use crate::segment::Segment;
 use crate::storage::create_storage;
@@ -532,8 +534,33 @@ fn ends_paragraph(segments: &[Segment], indices: &[usize]) -> Vec<bool> {
 }
 
 /// One `audiobook.mp3`, or `chapter_NN.mp3` per source file when the
-/// project has several and `chapter_by_chapter` is set.
+/// project has several and `chapter_by_chapter` is set. The provisional
+/// audiobook of stage 2 is deleted once they are written.
 fn assemble_outputs(
+    cfg: &Config,
+    wav_paths: &[PathBuf],
+    segments: &[Segment],
+    final_path: &Path,
+    project_name: &str,
+    chapter_by_chapter: bool,
+    progress: Progress,
+) -> Result<Vec<PathBuf>> {
+    let outputs = assemble_files(
+        cfg,
+        wav_paths,
+        segments,
+        final_path,
+        project_name,
+        chapter_by_chapter,
+        progress,
+    )?;
+    if !outputs.is_empty() {
+        preview::remove(final_path);
+    }
+    Ok(outputs)
+}
+
+fn assemble_files(
     cfg: &Config,
     wav_paths: &[PathBuf],
     segments: &[Segment],
@@ -600,6 +627,55 @@ fn assemble_outputs(
 /// again with another seed. The chunks of the last round are kept, so no
 /// text goes missing.
 pub const CLEANUP_ROUNDS: usize = 2;
+
+/// [`TtsEngine::process_all`] while a second thread rebuilds the
+/// provisional audiobook `preview_path` after every newly spoken chunk
+/// (see [`crate::preview`]). The TTS does not wait for it.
+#[allow(clippy::too_many_arguments)]
+fn synthesize_with_preview(
+    cfg: &Config,
+    project_name: &str,
+    tts: &mut TtsEngine,
+    segments: &[Segment],
+    chunks_dir: &Path,
+    preview_path: &Path,
+    progress: Progress,
+    stop: Option<&StopFlag>,
+    chunk_done: Option<&(dyn Fn() + Sync)>,
+) -> Result<Vec<PathBuf>> {
+    let queue = PreviewQueue::default();
+    let report = |m: &str| emit(progress, &format!("[{project_name}] {m}"));
+    std::thread::scope(|s| {
+        let _end = preview::EndOnDrop(&queue);
+        let worker =
+            s.spawn(|| preview::run(&queue, &cfg.settings, segments, preview_path, stop, &report));
+        let result = tts.process_all_with(segments, chunks_dir, stop, &mut |c| {
+            if let Some(cb) = chunk_done {
+                cb();
+            }
+            if c.synthesized {
+                queue.push(c.wavs.to_vec());
+            }
+        });
+        // Complete: the final assembly follows and replaces the preview.
+        // Stopped or failed: bring it up to date, unless force-stopped.
+        let keep = (result.is_err() || stopped(stop)) && !forced(stop);
+        if keep {
+            if queue.busy() {
+                report("finishing the provisional audiobook...");
+            }
+            queue.close();
+        } else {
+            queue.cancel();
+        }
+        match worker.join() {
+            Ok(Some(last)) if keep => report(&last),
+            Ok(_) => {}
+            Err(_) => log::warn!("[{project_name}] the provisional audiobook thread crashed"),
+        }
+        result
+    })
+}
 
 /// Write the prepared text of a project to `<output>/<project>/text/`:
 /// `prepared.txt` (as cleaned and segmented) and, with `NORMALIZE_NUMBERS`,
@@ -734,8 +810,19 @@ pub fn generate_audio_for_project(
         }
         tts.set_review(Some(store));
         let chunks_dir = project_out.join("chunks");
+        let preview_path = project_out.join("final").join(preview::PREVIEW_FILE);
         let wav_paths = (|| -> Result<Vec<PathBuf>> {
-            let mut wavs = tts.process_all(segments, &chunks_dir, stop, chunk_done)?;
+            let mut wavs = synthesize_with_preview(
+                cfg,
+                project_name,
+                tts,
+                segments,
+                &chunks_dir,
+                &preview_path,
+                progress,
+                stop,
+                chunk_done,
+            )?;
             if !cfg.settings.auto_cleanup {
                 return Ok(wavs);
             }
@@ -1316,6 +1403,70 @@ mod tests {
             spoken.contains("000000 | Am dritten Mai neunzehnhundertfünfundneunzig war es kalt."),
             "{spoken}"
         );
+    }
+
+    #[test]
+    fn provisional_audiobook_follows_the_synthesis() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        std::fs::write(
+            c.paths.input_dir.join("Buch.md"),
+            "Erster Absatz.\n\nZweiter Absatz.\n\nDritter Absatz.",
+        )
+        .unwrap();
+        let input = c.paths.input_dir.clone();
+        let out = c.paths.output_dir.clone();
+        let segs = prepare_segments(&c, &input, &out, &no_progress, None, None).unwrap();
+        assert_eq!(segs["Buch"].len(), 3);
+        let final_dir = out.join("Buch/final");
+        let preview_mp3 = final_dir.join(preview::PREVIEW_FILE);
+
+        // Stopped after two chunks: the preview holds exactly those two.
+        let stop = StopFlag::new();
+        let done = std::sync::atomic::AtomicUsize::new(0);
+        let cb = || {
+            if done.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                stop.set();
+            }
+        };
+        let msgs = std::sync::Mutex::new(Vec::<String>::new());
+        let progress = |m: &str| msgs.lock().unwrap().push(m.to_string());
+        let res = generate_audio(&c, &segs, &out, &progress, Some(&stop), Some(&cb)).unwrap();
+        assert!(res.is_empty() || res["Buch"].is_none());
+        assert!(preview_mp3.exists());
+        assert!(!crate::audio::assembler::part_path(&preview_mp3).exists());
+        assert!(!final_dir.join("audiobook.mp3").exists());
+        let chunks = out.join("Buch/chunks");
+        let two = vec![
+            chunks.join("chunk_000000.wav"),
+            chunks.join("chunk_000001.wav"),
+        ];
+        let reference = dir.path().join("two.mp3");
+        crate::audio::assembler::assemble_preview(
+            &two,
+            &[true, true],
+            &reference,
+            &c.settings,
+            &|| false,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            std::fs::read(&preview_mp3).unwrap(),
+            std::fs::read(&reference).unwrap()
+        );
+        let msgs = msgs.into_inner().unwrap();
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("provisional audiobook (2 of 3 chunks")),
+            "{msgs:?}"
+        );
+
+        // Resumed to the end: the final file replaces the preview.
+        let res = generate_audio(&c, &segs, &out, &no_progress, None, None).unwrap();
+        assert!(res["Buch"].is_some());
+        assert!(final_dir.join("audiobook.mp3").exists());
+        assert!(!preview_mp3.exists());
     }
 
     #[test]

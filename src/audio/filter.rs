@@ -20,7 +20,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
-use super::{read_wav, tags, write_wav_pcm16};
+use super::{Audio, read_wav, tags, write_wav_pcm16};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterKind {
@@ -95,6 +95,35 @@ pub fn sosfilt(sections: &[Sos], x: &mut [f64]) {
     }
 }
 
+/// The filters of [`denoise`], applied in memory: high-pass at 60 Hz,
+/// low-pass at 9 kHz (lower for low sample rates).
+pub fn denoise_audio(audio: &mut Audio) -> Result<()> {
+    let sr = audio.sample_rate as f64;
+    let hp = butter_sos(4, 60.0, sr, FilterKind::HighPass)?;
+    let cutoff = (9000i64).min(audio.sample_rate as i64 / 2 - 500);
+    let lp = if cutoff > 0 {
+        Some(butter_sos(2, cutoff as f64, sr, FilterKind::LowPass)?)
+    } else {
+        None
+    };
+    let ch = audio.channels.max(1) as usize;
+    let frames = audio.samples.len() / ch;
+    audio.samples.truncate(frames * ch);
+    for c in 0..ch {
+        let mut x: Vec<f64> = (0..frames)
+            .map(|i| audio.samples[i * ch + c] as f64)
+            .collect();
+        sosfilt(&hp, &mut x);
+        if let Some(lp) = &lp {
+            sosfilt(lp, &mut x);
+        }
+        for (i, v) in x.into_iter().enumerate() {
+            audio.samples[i * ch + c] = v as f32;
+        }
+    }
+    Ok(())
+}
+
 /// Remove sub-bass rumble below 60 Hz and gently roll off highs above
 /// 9 kHz (harsh/metallic TTS artifacts). Rewrites the file as 16-bit PCM
 /// and keeps its ID3 tag.
@@ -102,31 +131,9 @@ pub fn denoise(path: &Path) -> Result<()> {
     log::info!("Denoising: {}", path.display());
     let result = (|| -> Result<()> {
         let tag = tags::read_tag(path);
-        let audio = read_wav(path)?;
-        let sr = audio.sample_rate as f64;
-        let hp = butter_sos(4, 60.0, sr, FilterKind::HighPass)?;
-        let cutoff = (9000i64).min(audio.sample_rate as i64 / 2 - 500);
-        let lp = if cutoff > 0 {
-            Some(butter_sos(2, cutoff as f64, sr, FilterKind::LowPass)?)
-        } else {
-            None
-        };
-        let ch = audio.channels.max(1) as usize;
-        let frames = audio.samples.len() / ch;
-        let mut out = vec![0f32; frames * ch];
-        for c in 0..ch {
-            let mut x: Vec<f64> = (0..frames)
-                .map(|i| audio.samples[i * ch + c] as f64)
-                .collect();
-            sosfilt(&hp, &mut x);
-            if let Some(lp) = &lp {
-                sosfilt(lp, &mut x);
-            }
-            for (i, v) in x.into_iter().enumerate() {
-                out[i * ch + c] = v as f32;
-            }
-        }
-        write_wav_pcm16(path, &out, audio.channels, audio.sample_rate)?;
+        let mut audio = read_wav(path)?;
+        denoise_audio(&mut audio)?;
+        write_wav_pcm16(path, &audio.samples, audio.channels, audio.sample_rate)?;
         if let Some(tag) = tag {
             tags::write_tag(path, &tag);
         }

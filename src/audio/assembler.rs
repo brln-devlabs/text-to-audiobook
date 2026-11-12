@@ -24,6 +24,9 @@
 //! With `LOUDNESS_TARGET_LUFS` below 0 the chunks are measured first and the
 //! whole file gets one gain to that loudness; a limiter catches the peaks
 //! (see [`super::loudness`]).
+//!
+//! [`assemble_preview`] builds the provisional MP3 written while stage 2 is
+//! still running: the same mix from chunks that are not denoised yet.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -33,6 +36,7 @@ use std::sync::LazyLock;
 use anyhow::{Context, Result, anyhow};
 use regex::Regex;
 
+use super::filter::denoise_audio;
 use super::loudness::{
     Limiter, LoudnessMeter, PEAK_CEILING_DBFS, db_to_gain, normalization_gain_db,
 };
@@ -160,12 +164,28 @@ impl Crossfader {
     }
 }
 
+/// Returned when the abort check of [`assemble_preview`] said stop.
+#[derive(Debug, thiserror::Error)]
+#[error("assembly aborted")]
+pub struct Aborted;
+
+/// How [`mix`] reads the chunks.
+#[derive(Clone, Copy, Default)]
+struct Source<'a> {
+    /// Filter every chunk like [`super::filter::denoise`] while reading
+    /// (chunks that are not denoised on disk yet).
+    denoise: bool,
+    /// Asked before every chunk; true gives up with [`Aborted`].
+    abort: Option<&'a dyn Fn() -> bool>,
+}
+
 /// Mix the chunks with crossfades and the pauses of `plan` at `rate`.
 fn mix(
     chunk_wavs: &[PathBuf],
     plan: &[Option<u32>],
     rate: u32,
     crossfade_ms: u32,
+    source: Source,
     sink: &mut Sink,
 ) -> Result<usize> {
     let frames = |ms: u32| (ms as u64 * rate as u64 / 1000) as usize;
@@ -174,8 +194,14 @@ fn mix(
     let silence_xf = frames(SILENCE_CROSSFADE_MS);
     let mut mixer = Crossfader::new(rate, keep);
     for (i, wav_path) in chunk_wavs.iter().enumerate() {
-        log::debug!("Loading chunk {i}: {}", wav_path.display());
-        let audio = read_wav(wav_path)?;
+        if source.abort.is_some_and(|abort| abort()) {
+            return Err(Aborted.into());
+        }
+        log::trace!("Loading chunk {i}: {}", wav_path.display());
+        let mut audio = read_wav(wav_path)?;
+        if source.denoise {
+            denoise_audio(&mut audio)?;
+        }
         let mut samples = audio.to_mono();
         if audio.sample_rate != rate {
             samples = resample(&samples, audio.sample_rate, rate);
@@ -188,22 +214,25 @@ fn mix(
     mixer.finish(sink)
 }
 
-/// Streaming WAV + MP3 writer, with optional gain and limiter.
+/// Streaming MP3 (+ WAV) writer, with optional gain and limiter.
 struct Writer {
-    wav: hound::WavWriter<BufWriter<File>>,
+    /// The WAV mirror (None: MP3 only).
+    wav: Option<hound::WavWriter<BufWriter<File>>>,
     mp3: mp3lame_encoder::Encoder,
     mp3_file: BufWriter<File>,
     mp3_buf: Vec<u8>,
     /// Loudness gain and the limiter behind it (None: written as mixed).
     level: Option<(f32, Limiter)>,
+    log_level: log::Level,
 }
 
 impl Writer {
     fn new(
-        wav_path: &Path,
+        wav_path: Option<&Path>,
         mp3_path: &Path,
         sample_rate: u32,
         gain_db: Option<f64>,
+        log_level: log::Level,
     ) -> Result<Self> {
         let spec = hound::WavSpec {
             channels: 1,
@@ -211,8 +240,13 @@ impl Writer {
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
-        let wav = hound::WavWriter::create(wav_path, spec)
-            .with_context(|| format!("creating {}", wav_path.display()))?;
+        let wav = match wav_path {
+            Some(p) => Some(
+                hound::WavWriter::create(p, spec)
+                    .with_context(|| format!("creating {}", p.display()))?,
+            ),
+            None => None,
+        };
         let mut builder =
             mp3lame_encoder::Builder::new().ok_or_else(|| anyhow!("LAME init failed"))?;
         // MPEG-2 (sample rates below 32 kHz) tops out at 160 kbit/s.
@@ -248,6 +282,7 @@ impl Writer {
                     Limiter::new(PEAK_CEILING_DBFS, sample_rate),
                 )
             }),
+            log_level,
         })
     }
 
@@ -268,8 +303,8 @@ impl Writer {
             return Ok(());
         }
         let pcm: Vec<i16> = samples.iter().map(|s| to_i16(*s)).collect();
-        {
-            let mut w16 = self.wav.get_i16_writer(pcm.len() as u32);
+        if let Some(wav) = &mut self.wav {
+            let mut w16 = wav.get_i16_writer(pcm.len() as u32);
             for s in &pcm {
                 w16.write_sample(*s);
             }
@@ -292,10 +327,16 @@ impl Writer {
             self.encode(&tail)?;
             let reduction = limiter.max_reduction_db();
             if reduction < 0.0 {
-                log::info!("Limiter: peaks lowered by up to {:.1} dB", -reduction);
+                log::log!(
+                    self.log_level,
+                    "Limiter: peaks lowered by up to {:.1} dB",
+                    -reduction
+                );
             }
         }
-        self.wav.finalize()?;
+        if let Some(wav) = self.wav.take() {
+            wav.finalize()?;
+        }
         self.mp3_buf.clear();
         self.mp3_buf.reserve(8192);
         self.mp3
@@ -322,23 +363,70 @@ fn loudness_gain_db(
     plan: &[Option<u32>],
     rate: u32,
     settings: &crate::config::Settings,
+    source: Source,
+    log_level: log::Level,
 ) -> Result<Option<f64>> {
     let target = settings.loudness_target_lufs;
     if target >= 0 {
         return Ok(None);
     }
     let mut meter = LoudnessMeter::new(rate);
-    mix(chunk_wavs, plan, rate, settings.crossfade_ms, &mut |s| {
-        meter.process(s);
-        Ok(())
-    })?;
+    mix(
+        chunk_wavs,
+        plan,
+        rate,
+        settings.crossfade_ms,
+        source,
+        &mut |s| {
+            meter.process(s);
+            Ok(())
+        },
+    )?;
     let Some(measured) = meter.integrated_lufs() else {
-        log::info!("Loudness: no speech found, level left unchanged");
+        log::log!(log_level, "Loudness: no speech found, level left unchanged");
         return Ok(None);
     };
     let gain = normalization_gain_db(measured, target as f64);
-    log::info!("Loudness: {measured:.1} LUFS measured, target {target} LUFS, gain {gain:+.1} dB");
+    log::log!(
+        log_level,
+        "Loudness: {measured:.1} LUFS measured, target {target} LUFS, gain {gain:+.1} dB"
+    );
     Ok(Some(gain))
+}
+
+/// Mix `chunk_wavs` into `mp3_out` (and `wav_out`); returns the length in
+/// seconds.
+fn render(
+    chunk_wavs: &[PathBuf],
+    ends_paragraph: &[bool],
+    wav_out: Option<&Path>,
+    mp3_out: &Path,
+    settings: &crate::config::Settings,
+    source: Source,
+    log_level: log::Level,
+) -> Result<f64> {
+    let mut rate = 0u32;
+    for w in chunk_wavs {
+        rate = rate.max(wav_rate(w)?);
+    }
+    let plan = silence_plan(
+        chunk_wavs,
+        ends_paragraph,
+        settings.silence_after_period_ms,
+        settings.silence_after_paragraph_ms,
+    );
+    let gain_db = loudness_gain_db(chunk_wavs, &plan, rate, settings, source, log_level)?;
+    let mut writer = Writer::new(wav_out, mp3_out, rate, gain_db, log_level)?;
+    let frames = mix(
+        chunk_wavs,
+        &plan,
+        rate,
+        settings.crossfade_ms,
+        source,
+        &mut |s| writer.write(s),
+    )?;
+    writer.finish()?;
+    Ok(frames as f64 / rate as f64)
 }
 
 /// Join `chunk_wavs` into `<out>.wav` and `<out>.mp3`; returns the MP3 path.
@@ -363,27 +451,16 @@ pub fn assemble(
     }
 
     let result = (|| -> Result<PathBuf> {
-        let mut rate = 0u32;
-        for w in chunk_wavs {
-            rate = rate.max(wav_rate(w)?);
-        }
-        let plan = silence_plan(
+        let secs = render(
             chunk_wavs,
             ends_paragraph,
-            settings.silence_after_period_ms,
-            settings.silence_after_paragraph_ms,
-        );
-        let gain_db = loudness_gain_db(chunk_wavs, &plan, rate, settings)?;
-        let mut writer = Writer::new(&wav_out, &mp3_out, rate, gain_db)?;
-        let frames = mix(chunk_wavs, &plan, rate, settings.crossfade_ms, &mut |s| {
-            writer.write(s)
-        })?;
-        writer.finish()?;
-        log::info!(
-            "Exported WAV: {} ({:.1} s)",
-            wav_out.display(),
-            frames as f64 / rate as f64
-        );
+            Some(&wav_out),
+            &mp3_out,
+            settings,
+            Source::default(),
+            log::Level::Info,
+        )?;
+        log::info!("Exported WAV: {} ({secs:.1} s)", wav_out.display());
         log::info!("Exported MP3: {}", mp3_out.display());
         Ok(mp3_out.clone())
     })();
@@ -391,6 +468,63 @@ pub fn assemble(
         log::error!("Assembly failed: {e:#}");
     }
     result
+}
+
+/// Name under which [`assemble_preview`] writes before it replaces `mp3`.
+pub fn part_path(mp3: &Path) -> PathBuf {
+    let mut name = mp3.file_name().unwrap_or_default().to_os_string();
+    name.push(".part");
+    mp3.with_file_name(name)
+}
+
+/// Provisional MP3 of the chunks done so far, without WAV mirror: the same
+/// crossfades, pauses and loudness as [`assemble`], and the chunks are
+/// denoised in memory as stage 2 later does on disk, so it sounds like the
+/// finished book. It is written to [`part_path`] and then renamed to
+/// `mp3_path`, so a player never sees a half-written file.
+///
+/// `abort` is asked before every chunk; true stops and leaves `mp3_path`
+/// as it was. Returns the length in seconds, or None when aborted or
+/// without chunks.
+pub fn assemble_preview(
+    chunk_wavs: &[PathBuf],
+    ends_paragraph: &[bool],
+    mp3_path: &Path,
+    settings: &crate::config::Settings,
+    abort: &dyn Fn() -> bool,
+) -> Result<Option<f64>> {
+    if chunk_wavs.is_empty() {
+        return Ok(None);
+    }
+    if let Some(parent) = mp3_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let part = part_path(mp3_path);
+    let source = Source {
+        denoise: true,
+        abort: Some(abort),
+    };
+    let result = render(
+        chunk_wavs,
+        ends_paragraph,
+        None,
+        &part,
+        settings,
+        source,
+        log::Level::Debug,
+    )
+    .and_then(|secs| {
+        std::fs::rename(&part, mp3_path)
+            .with_context(|| format!("replacing {}", mp3_path.display()))?;
+        Ok(secs)
+    });
+    match result {
+        Ok(secs) => Ok(Some(secs)),
+        Err(e) => {
+            let _ = std::fs::remove_file(&part);
+            if e.is::<Aborted>() { Ok(None) } else { Err(e) }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -543,6 +677,36 @@ mod tests {
         let input = crate::audio::read_wav(&wavs[0]).unwrap();
         let output = crate::audio::read_wav(&out.with_extension("wav")).unwrap();
         assert_eq!(output.samples, input.samples);
+    }
+
+    #[test]
+    fn preview_is_mp3_only_and_an_abort_keeps_the_old_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let wavs = tone_chunks(dir.path(), 0.05, 2);
+        let out = dir.path().join("final/preview.mp3");
+        let settings = Settings::default();
+        let secs = assemble_preview(&wavs, &[true, true], &out, &settings, &|| false)
+            .unwrap()
+            .unwrap();
+        assert!((secs - (3.0 + 1.1 + 2.92 + 1.1)).abs() < 1e-3, "{secs}");
+        assert!(out.exists());
+        assert!(!out.with_extension("wav").exists());
+        assert!(!part_path(&out).exists());
+        let before = std::fs::read(&out).unwrap();
+        // Aborted: nothing replaced, no leftovers.
+        let calls = std::cell::Cell::new(0);
+        let abort = || {
+            calls.set(calls.get() + 1);
+            calls.get() > 1
+        };
+        let one = tone_chunks(dir.path(), 0.5, 1);
+        assert!(
+            assemble_preview(&one, &[true], &out, &settings, &abort)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(std::fs::read(&out).unwrap(), before);
+        assert!(!part_path(&out).exists());
     }
 
     #[test]
