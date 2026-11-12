@@ -290,6 +290,26 @@ pub fn cleanup_noisy_chunks(
     voice_ref_path: &Path,
     th: &Thresholds,
 ) -> IndexMap<String, ProjectCleanup> {
+    cleanup_noisy_chunks_with(
+        output_dir,
+        project_names,
+        progress,
+        voice_ref_path,
+        th,
+        &|_, _| {},
+    )
+}
+
+/// [`cleanup_noisy_chunks`], calling `audited(done, total)` after every
+/// WAV file of a project.
+pub fn cleanup_noisy_chunks_with(
+    output_dir: &Path,
+    project_names: Option<&[String]>,
+    progress: &dyn Fn(&str),
+    voice_ref_path: &Path,
+    th: &Thresholds,
+    audited: &dyn Fn(usize, usize),
+) -> IndexMap<String, ProjectCleanup> {
     let mut results = IndexMap::new();
 
     let mut ref_fp: Option<Vec<f64>> = None;
@@ -360,7 +380,10 @@ pub fn cleanup_noisy_chunks(
             wavs.len()
         ));
         let mut r = ProjectCleanup::default();
-        for wav in &wavs {
+        for (n, wav) in wavs.iter().enumerate() {
+            if n > 0 {
+                audited(n, wavs.len());
+            }
             if !wav.exists() {
                 continue; // removed together with a failing sibling
             }
@@ -440,6 +463,7 @@ pub fn cleanup_noisy_chunks(
                 log::error!("Failed to process {name}: {e:#}");
             }
         }
+        audited(wavs.len(), wavs.len());
         progress(&format!(
             "[{project}] cleanup done: {} cleaned, {} deleted",
             r.edited,
@@ -498,13 +522,17 @@ mod tests {
 
         let msgs = std::sync::Mutex::new(Vec::new());
         let progress = |m: &str| msgs.lock().unwrap().push(m.to_string());
-        let r = cleanup_noisy_chunks(
+        let audited = std::sync::Mutex::new(Vec::new());
+        let r = cleanup_noisy_chunks_with(
             &dir.path().join("out"),
             Some(&["proj".to_string()]),
             &progress,
             &dir.path().join("missing_ref.wav"),
             &Thresholds::default(),
+            &|done, total| audited.lock().unwrap().push((done, total)),
         );
+        // Every file counts, also the sibling deleted before its turn.
+        assert_eq!(*audited.lock().unwrap(), [(1, 4), (2, 4), (3, 4), (4, 4)]);
         let p = &r["proj"];
         assert_eq!(p.deleted.len(), 2, "{:?}", msgs.lock().unwrap());
         assert!(p.deleted[0].1.starts_with("low speech ratio 0%"));

@@ -104,6 +104,12 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   (`000012 | …` gehört zu `chunk_000012.wav`). Mit `NORMALIZE_NUMBERS` kommt `spoken.txt`
   dazu: der Text, wie er gesprochen wird. „2. Generate Audio“ erzeugt die Sprache und baut das
   Hörbuch zusammen.
+- **Fortschrittsbalken:** Bei „2. Generate Audio“ zeigt der Balken zuerst nur die
+  Sprachausgabe, gewichtet nach Textlänge: Ein langes Stück, das in mehrere Teile aufgeteilt
+  wird, zählt entsprechend mehr. Die Restzeit (ETA) richtet sich nur nach den Stücken, die in
+  diesem Lauf gesprochen werden; schon vorhandene Stücke eines unterbrochenen Laufs machen sie
+  also nicht zu kurz. Danach beginnt der Balken für die Nachbearbeitung jedes Textes
+  (Prüfung, Entrauschen, Zusammenbau) wieder bei 0.
 - **Vorläufiges Hörbuch während der Sprachausgabe:** Nach jedem neu gesprochenen Audiostück
   baut das Programm `output/<Textname>/final/audiobook_preview.mp3` aus allen bisher fertigen
   Stücken neu zusammen, in einem eigenen Thread, während die Sprachausgabe schon das nächste
