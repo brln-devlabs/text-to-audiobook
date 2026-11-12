@@ -519,15 +519,50 @@ static PAGE_NUMBERS: LazyLock<Regex> =
 static SPACED_THOUSANDS: LazyLock<Regex> =
     LazyLock::new(|| re(r"(^|[^\d.,])(\d{1,3}(?:[ \u{00A0}\u{2009}\u{202F}]\d{3})+)($|[^\d.,])"));
 static MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| re(r"[ \t]{2,}"));
+/// "#1" / "# 1" -> "Nummer 1".
+static HASH_NUMBER: LazyLock<Regex> = LazyLock::new(|| re(r#"(^|[\s(\[„"'])#\s?(\d)"#));
+/// A "#" on its own ("Kommentar (#)") is spoken; "C#" or "#tag" stay.
+static LONE_HASH: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[^\p{L}\p{N}#])#($|[^\p{L}\p{N}#])"));
+/// "Groß-/Kleinschreibung" -> "Groß- und Kleinschreibung".
+static HYPHEN_SLASH: LazyLock<Regex> = LazyLock::new(|| re(r"(\p{L})-\s?/\s?(\p{L})"));
+/// Capitals glued to a number: "MD5", "CO2", "MP3" (the digits are read
+/// as a number of their own: "MD fünf").
+static CAPITALS_NUMBER: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\p{Lu}+)(\d+)\b"));
 static DAY_RANGE: LazyLock<Regex> = LazyLock::new(|| {
     re(
         r"\b(\d{1,2})\.\s?[–-]\s?(\d{1,2})\.\s+(Januar|Jänner|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\b",
     )
 });
 
+/// "&" is spoken "und": "Q&A" -> "Q und A", "„&“" -> "„und“".
+fn ampersand(text: &str) -> String {
+    if !text.contains('&') {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + 8);
+    for (i, &c) in chars.iter().enumerate() {
+        if c != '&' {
+            out.push(c);
+            continue;
+        }
+        if i > 0 && chars[i - 1].is_alphanumeric() {
+            out.push(' ');
+        }
+        out.push_str("und");
+        if chars.get(i + 1).is_some_and(|n| n.is_alphanumeric()) {
+            out.push(' ');
+        }
+    }
+    out
+}
+
 /// Mathematical symbols in words: "n=11", "s ∈ D", "BLEU > 0,75".
 fn symbols(text: &str) -> String {
-    let mut s = text.to_string();
+    let mut s = ampersand(text);
+    s = HASH_NUMBER.replace_all(&s, "${1}Nummer $2").into_owned();
+    s = LONE_HASH.replace_all(&s, "${1}Rautezeichen$2").into_owned();
+    s = HYPHEN_SLASH.replace_all(&s, "$1- und $2").into_owned();
     for (sym, word) in [
         ("≠", " ungleich "),
         ("≤", " kleiner gleich "),
@@ -765,6 +800,9 @@ pub fn normalize(text: &str) -> String {
             format!("{}{sep}{}", &c[1], section_number(&c[3]))
         })
         .into_owned();
+
+    // MD5 -> MD 5 (-> MD fünf below)
+    s = CAPITALS_NUMBER.replace_all(&s, "$1 $2").into_owned();
 
     // Kapitel IV -> Kapitel vier. "Anhang C" and "Anhang C.1" are letters.
     let t = s.clone();
@@ -1236,6 +1274,42 @@ mod tests {
             ("% Beispiele mit Treffer", "Prozent Beispiele mit Treffer"),
             ("WikiAuto + Turk", "WikiAuto plus Turk"),
             ("„claim“ ⇒ „claims“", "„claim“ zu „claims“"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize(input), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn ampersand_hash_slash_and_capitals_with_digits() {
+        let cases = [
+            (
+                "Synonyme, etwa „and“ → „&“",
+                "Synonyme, etwa „and“ zu „und“",
+            ),
+            ("Forschung & Entwicklung", "Forschung und Entwicklung"),
+            ("AT&T und Q&A", "AT und T und Q und A"),
+            (
+                "Code als Python-Kommentar (#) einleiten",
+                "Code als Python-Kommentar (Rautezeichen) einleiten",
+            ),
+            ("ein „#“ davor", "ein „Rautezeichen“ davor"),
+            ("Platz #1 und # 2", "Platz Nummer eins und Nummer zwei"),
+            ("C# und #hashtag", "C# und #hashtag"),
+            (
+                "Es ändert Groß-/Kleinschreibung und Ein- / Ausgabe.",
+                "Es ändert Groß- und Kleinschreibung und Ein- und Ausgabe.",
+            ),
+            ("per gesalzenem MD5-Hash", "per gesalzenem MD fünf-Hash"),
+            ("CO2 und MP3", "CO zwei und MP drei"),
+            // Not glued to capitals: unchanged or handled by other rules.
+            (
+                "GPT-3 DaVinci (Original und v2)",
+                "GPT-drei DaVinci (Original und v2)",
+            ),
+            ("SQuAD2.0", "SQuAD zwei Punkt null"),
+            ("GPT-Neo 6B", "GPT-Neo sechs Milliarden"),
+            ("H2O", "H2O"),
         ];
         for (input, expected) in cases {
             assert_eq!(normalize(input), expected, "input: {input}");

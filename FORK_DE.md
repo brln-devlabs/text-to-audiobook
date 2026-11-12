@@ -45,17 +45,28 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   Milliarden“, „125M“), GB/MB/TB, Versionen („SQuAD2.0“ → „zwei Punkt null“), arXiv-Nummern
   Ziffer für Ziffer, Tausender mit Leerzeichen („600 000“ → „sechshunderttausend“), Literaturangaben („33:1877–1901“ → „Band dreiunddreißig, Seiten …“;
   Seitenzahlen nie als Jahreszahl), Hochzahlen („10²“ → „zehn hoch zwei“) und Rechenzeichen (=, <, >, ≤, ≥,
-  ≈, ∈, ×, ^).
+  ≈, ∈, ×, ^). Außerdem: „&“ → „und“ („Q&A“ → „Q und A“), ein einzelnes „#“ → „Rautezeichen“
+  („#1“ → „Nummer eins“; „C#“ und „#tag“ bleiben), „Groß-/Kleinschreibung“ → „Groß- und
+  Kleinschreibung“, Großbuchstaben mit angehängter Zahl („MD5“ → „MD fünf“, „CO2“, „MP3“).
 - **Textbereinigung** (immer): Markdown-Escapes („\*“, „\_“, „\[“) werden zum Zeichen,
   Fußnotenzeichen („Carlini¹“, „¹ Google Research“, „\*“) entfallen, Tabellen werden Zeile
   für Zeile als Aufzählung gelesen, jeder Listenpunkt (z. B. Literaturangaben) wird ein
-  eigener Absatz, und bei entfernten Links fällt das „unter“ davor mit weg. Sätze werden
+  eigener Absatz, und bei entfernten Links fällt das „unter“ davor mit weg. HTML-Entities
+  („&amp;“, „&nbsp;“, „&#8211;“) werden zum Zeichen. Sätze werden
   nicht mehr bei Abkürzungen, Initialen oder Ordnungszahlen getrennt („z. B.“, „et al.“,
   „Christopher A. Choquette“, „am 15. September“). Gesprochene Kapitelnamen
   (`VOCALIZE_CHAPTER_NAMES`) nehmen die erste Überschrift der Datei, sonst den Dateinamen in
   seiner Schreibweise; derselbe Name steht dann auch als Kapiteltitel in `prepared.txt` und in den
   Titel-Tags (statt „Chapter 1“). Kapiteltitel, die das LLM erfindet und die nicht im Text stehen
   (etwa „The Beginning“), werden verworfen.
+- **Zwischenüberschriften vorlesen** (`SPEAK_HEADINGS = true`, Standard; Settings → Text
+  Processing): Die erste Überschrift einer Datei ist der Kapitelname und wird nur über
+  `VOCALIZE_CHAPTER_NAMES` gesprochen. Jede weitere Überschrift wird ein eigener Absatz mit
+  Absatzpause davor und danach und endet mit einem Punkt („## Kernaussage“ → „Kernaussage.“).
+  Ohne sie fehlen oft Begriffe, die nur in der Überschrift stehen. Nummerierte Überschriften
+  („### 1. Ergebnisse“) werden wie andere Gliederungspunkte behandelt: Mit `REVIEW_NUMBERS`
+  steht „Erstens:“ als Vorschlag zuerst, und „Apply to all identical spots“ übernimmt die Wahl
+  für alle. `false` stellt das alte Verhalten wieder her (Überschriften entfallen).
 - **Geänderter Text wird erkannt:** Ändert sich der vorbereitete Text (neue Programmversion,
   bearbeitete Eingabe), verwirft Stufe 1 die betroffenen Einträge im Cache, statt sie nach
   ihrer Nummer weiterzuverwenden (ein Eintrag gilt nur bei genau gleichem Text); „Clear Cache“ ist dafür nicht mehr nötig. Neben jedem

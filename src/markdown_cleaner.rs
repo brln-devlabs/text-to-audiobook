@@ -72,6 +72,41 @@ static EMPTY_BRACKETS: LazyLock<Regex> =
 static SPACE_BEFORE_PUNCT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s+([.,;:!?])").unwrap());
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[ \t]{2,}").unwrap());
+/// HTML entities left in exported Markdown: "&amp;", "&nbsp;", "&#8211;".
+static ENTITY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([a-zA-Z]{2,8}));").unwrap()
+});
+
+/// Decode HTML entities, so "&amp;" reaches the normalizer as "&" (and is
+/// spoken "und") and "&nbsp;" is a space. Unknown names stay as written.
+fn decode_entities(line: &str) -> String {
+    ENTITY
+        .replace_all(line, |c: &Captures| {
+            let code = match (c.get(1), c.get(2)) {
+                (Some(d), _) => d.as_str().parse::<u32>().ok(),
+                (_, Some(h)) => u32::from_str_radix(h.as_str(), 16).ok(),
+                _ => None,
+            };
+            if let Some(ch) = code.and_then(char::from_u32).filter(|ch| !ch.is_control()) {
+                return ch.to_string();
+            }
+            let decoded = match c.get(3).map(|m| m.as_str()) {
+                Some("amp") => "&",
+                Some("lt") => "<",
+                Some("gt") => ">",
+                Some("quot") => "\"",
+                Some("apos") => "'",
+                Some("nbsp") => " ",
+                Some("ndash") => "–",
+                Some("mdash") => "—",
+                Some("hellip") => "…",
+                Some("shy") => "",
+                _ => return c[0].to_string(),
+            };
+            decoded.to_string()
+        })
+        .into_owned()
+}
 
 /// Escaped characters are hidden in a private-use plane while the emphasis
 /// rules run, so `\*` or `\_` never start emphasis.
@@ -146,6 +181,7 @@ fn clean_inline(line: &str) -> String {
         line.into_owned()
     };
     let line = HTML_TAG.replace_all(&line, "");
+    let line = decode_entities(&line);
     let line = restore_escapes(&line);
     let line = FOOTNOTE_MARK.replace_all(&line, "$1$2$3");
     let line = LONE_STAR.replace_all(&line, "");
@@ -158,14 +194,45 @@ fn clean_inline(line: &str) -> String {
     SPACES.replace_all(&line, " ").into_owned()
 }
 
+/// Text of a heading line ("## Titel ##" -> "Titel"), formatting removed;
+/// None for other lines and for empty headings.
+pub fn heading_text(line: &str) -> Option<String> {
+    if !HEADER.is_match(line) {
+        return None;
+    }
+    let rest = line.trim().trim_start_matches('#');
+    let title = clean(rest.trim().trim_end_matches('#').trim());
+    (!title.is_empty()).then_some(title)
+}
+
+/// A heading spoken as a paragraph of its own ends like a sentence, so the
+/// voice drops at its end: "Kernaussage" -> "Kernaussage.".
+fn spoken_heading(title: &str) -> String {
+    let core = title.trim_end_matches(['"', '\'', '“', '”', '»', '«', '’', ')', ']']);
+    if core.ends_with(['.', '!', '?', ':', '…']) {
+        title.to_string()
+    } else {
+        format!("{title}.")
+    }
+}
+
 /// Remove headings, code fences, emphasis, links, URLs, HTML tags, list
 /// markers, table pipes and footnote marks. Paragraphs (blank-line
 /// separated) are preserved; every list item becomes its own paragraph and
 /// every table row its own sentence.
 pub fn clean(md: &str) -> String {
+    clean_with(md, false)
+}
+
+/// Like [`clean`]; with `speak_headings` every heading after the first one
+/// stays as a paragraph of its own (`SPEAK_HEADINGS`). The first heading of
+/// a file is its chapter name, spoken by `VOCALIZE_CHAPTER_NAMES`, and is
+/// always dropped.
+pub fn clean_with(md: &str, speak_headings: bool) -> String {
     let mut cleaned: Vec<String> = Vec::new();
     let mut in_code_fence = false;
     let mut in_table = false;
+    let mut seen_heading = false;
 
     let blank = |cleaned: &mut Vec<String>| {
         if cleaned.last().is_some_and(|l| !l.is_empty()) {
@@ -178,7 +245,19 @@ pub fn clean(md: &str) -> String {
             in_code_fence = !in_code_fence;
             continue;
         }
-        if in_code_fence || HEADER.is_match(line) {
+        if in_code_fence {
+            continue;
+        }
+        if HEADER.is_match(line) {
+            if let Some(title) = heading_text(line) {
+                if speak_headings && seen_heading {
+                    in_table = false;
+                    blank(&mut cleaned);
+                    cleaned.push(spoken_heading(&title));
+                    cleaned.push(String::new());
+                }
+                seen_heading = true;
+            }
             continue;
         }
         if RULE.is_match(line) || TABLE_SEPARATOR.is_match(line) {
@@ -363,6 +442,45 @@ mod tests {
         assert_eq!(
             r,
             "Vorher.\n\nDatensatz, BLEU.\nMLSum-es, 58,7.\n\nNachher."
+        );
+    }
+
+    #[test]
+    fn headings_after_the_first_are_paragraphs() {
+        let md = "# Zusammenfassung: Titel\n\n**Ippolito, Carlini**, INLG 2023\n\n\
+                  ## Kernaussage\n\nViele Arbeiten.\n### 1. GitHub Copilots Filter ##\n\
+                  - Erster Punkt\n\n## Fazit: kurz?\n\n## *\n\nEnde.";
+        assert_eq!(
+            super::clean_with(md, true),
+            "Ippolito, Carlini, INLG 2023\n\nKernaussage.\n\nViele Arbeiten.\n\n\
+             1. GitHub Copilots Filter.\n\nErster Punkt\n\nFazit: kurz?\n\nEnde."
+        );
+        // Without SPEAK_HEADINGS (and in previews) all headings go.
+        assert_eq!(
+            clean(md),
+            "Ippolito, Carlini, INLG 2023\n\nViele Arbeiten.\n\nErster Punkt\n\nEnde."
+        );
+        // Headings in code blocks are code.
+        assert_eq!(
+            super::clean_with("# T\n\nA\n```\n# Kommentar\n```\n## B", true),
+            "A\n\nB."
+        );
+    }
+
+    #[test]
+    fn heading_text_and_sentence_end() {
+        assert_eq!(super::heading_text("## Titel ##").as_deref(), Some("Titel"));
+        assert_eq!(super::heading_text("#Titel"), None);
+        assert_eq!(super::heading_text("##  "), None);
+        assert_eq!(super::spoken_heading("Teil (2023)"), "Teil (2023).");
+        assert_eq!(super::spoken_heading("Was nun?“"), "Was nun?“");
+    }
+
+    #[test]
+    fn html_entities_are_decoded() {
+        assert_eq!(
+            clean("Q&amp;A, 5&nbsp;GB, 1990&#8211;1995, &#x201E;so&#x201C;, &unknown; &#0;"),
+            "Q&A, 5 GB, 1990–1995, „so“, &unknown; &#0;"
         );
     }
 
