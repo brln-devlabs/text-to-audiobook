@@ -17,10 +17,10 @@
 //! the four stage buttons, stop controls, settings and the live log.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::Duration;
 
 use anyhow::Result;
 use eframe::egui::{self, Color32, RichText};
@@ -30,7 +30,7 @@ use serde_json::{Map, Value};
 use crate::cancel::StopFlag;
 use crate::config::{self, Config, Settings};
 use crate::logging;
-use crate::pipeline::{self, SegmentsByProject};
+use crate::pipeline::{self, SegmentsByProject, Stage2Event};
 use crate::review::{self, ReviewStore};
 use crate::selection::{self, ProjectSelection};
 use crate::tts::{TtsEngine, voice};
@@ -846,15 +846,35 @@ impl App {
         }
         self.stop.clear();
         self.reset_progress();
-        let total: usize = to_process.values().map(Vec::len).sum();
         let output = self.output_dir.clone();
         self.spawn(move |cfg, stop, shared| {
-            let start = Instant::now();
-            let done = AtomicUsize::new(0);
-            let on_chunk = || {
-                let d = done.fetch_add(1, Ordering::SeqCst) + 1;
-                shared.set_progress(0.85 * d as f32 / total.max(1) as f32);
-                shared.set_label(progress_label(d, total, Some(start)));
+            // The bar shows the synthesis, then the post-processing of each
+            // project from 0 again.
+            let synth = Mutex::new(SynthProgress::new(&to_process));
+            let several = to_process.len() > 1;
+            let show_synthesis = |p: &SynthProgress| {
+                shared.set_progress(p.fraction());
+                shared.set_label(p.label());
+            };
+            let on_event = |e: Stage2Event| match e {
+                Stage2Event::Synthesis { .. } => show_synthesis(&synth.lock().unwrap()),
+                Stage2Event::Chunk {
+                    project,
+                    index,
+                    spoken,
+                } => {
+                    let mut p = synth.lock().unwrap();
+                    p.chunk(project, index, spoken);
+                    show_synthesis(&p);
+                }
+                Stage2Event::Post {
+                    project,
+                    step,
+                    done,
+                } => {
+                    shared.set_progress(done);
+                    shared.set_label(post_label(several.then_some(project), step));
+                }
             };
             let result = pipeline::generate_audio(
                 &cfg,
@@ -862,12 +882,21 @@ impl App {
                 &output,
                 &pipeline::no_progress,
                 Some(&stop),
-                Some(&on_chunk),
+                Some(&on_event),
             );
+            let synth = synth.into_inner().unwrap();
+            let failed = result
+                .as_ref()
+                .is_err_and(|e| !e.is::<crate::cancel::ForceStopped>());
+            if result.is_ok() && !stop.is_set() {
+                shared.set_progress(1.0);
+                shared.set_label(format!("Done: {} chunks", synth.total_chunks));
+            } else {
+                shared.set_progress(synth.fraction());
+                shared.set_label(synth.end_label(if failed { "Failed" } else { "Stopped" }));
+            }
             match result {
                 Ok(_) => {
-                    shared.set_progress(1.0);
-                    shared.set_label(progress_label(total, total, None));
                     if stop.is_forced() {
                         log::warn!("Stage 2 force-stopped.");
                     } else if stop.is_set() {
@@ -1855,24 +1884,122 @@ fn trim_log(text: &mut String, max: usize) {
     text.drain(..cut);
 }
 
-/// Progress label "Chunk 3 / 10  (ETA ~1m 5s)".
-fn progress_label(done: usize, total: usize, start: Option<Instant>) -> String {
-    if total == 0 {
-        return String::new();
-    }
-    match start {
-        Some(t) if done > 0 => {
-            let avg = t.elapsed().as_secs_f64() / done as f64;
-            let remaining = ((total.saturating_sub(done)) as f64 * avg) as u64;
-            let (m, s) = (remaining / 60, remaining % 60);
-            let eta = if m > 0 {
-                format!("{m}m {s}s")
-            } else {
-                format!("{s}s")
-            };
-            format!("Chunk {done} / {total}  (ETA ~{eta})")
+/// Progress of the synthesis in stage 2. Chunks are weighted by their
+/// length: a long chunk (split into several TTS calls) takes longer and
+/// moves the bar further. Only chunks spoken in this run count for the
+/// speed; reused ones are done at once and would make the ETA too short.
+struct SynthProgress {
+    /// Weight of every chunk, per project.
+    weights: IndexMap<String, Vec<u64>>,
+    total_chunks: usize,
+    total_weight: u64,
+    done_chunks: usize,
+    done_weight: u64,
+    /// Weight spoken in this run and the time it took.
+    spoken_weight: u64,
+    spoken_time: Duration,
+}
+
+impl SynthProgress {
+    fn new(segments: &SegmentsByProject) -> Self {
+        let weights: IndexMap<String, Vec<u64>> = segments
+            .iter()
+            .map(|(name, segs)| {
+                let w = segs
+                    .iter()
+                    .map(|s| s.normalized_text.chars().count().max(1) as u64)
+                    .collect();
+                (name.clone(), w)
+            })
+            .collect();
+        Self {
+            total_chunks: weights.values().map(Vec::len).sum(),
+            total_weight: weights.values().flatten().sum(),
+            weights,
+            done_chunks: 0,
+            done_weight: 0,
+            spoken_weight: 0,
+            spoken_time: Duration::ZERO,
         }
-        _ => format!("Chunk {done} / {total}"),
+    }
+
+    /// Chunk `index` of `project` is done: spoken in `spoken`, or reused.
+    fn chunk(&mut self, project: &str, index: usize, spoken: Option<Duration>) {
+        let w = self
+            .weights
+            .get(project)
+            .and_then(|w| w.get(index))
+            .copied()
+            .unwrap_or(1);
+        self.done_chunks += 1;
+        self.done_weight += w;
+        if let Some(t) = spoken {
+            self.spoken_weight += w;
+            self.spoken_time += t;
+        }
+    }
+
+    fn fraction(&self) -> f32 {
+        if self.total_weight == 0 {
+            return 0.0;
+        }
+        (self.done_weight as f64 / self.total_weight as f64) as f32
+    }
+
+    /// Time left at the speed of the chunks spoken so far.
+    fn eta(&self) -> Option<Duration> {
+        if self.spoken_weight == 0 {
+            return None;
+        }
+        let left = self.total_weight.saturating_sub(self.done_weight);
+        Some(
+            self.spoken_time
+                .mul_f64(left as f64 / self.spoken_weight as f64),
+        )
+    }
+
+    /// "Chunk 3 / 10  (ETA ~1m 5s)".
+    fn label(&self) -> String {
+        if self.total_chunks == 0 {
+            return String::new();
+        }
+        let count = format!("Chunk {} / {}", self.done_chunks, self.total_chunks);
+        match self.eta() {
+            Some(eta) if self.done_chunks < self.total_chunks => {
+                format!("{count}  (ETA ~{})", short_duration(eta))
+            }
+            _ => count,
+        }
+    }
+
+    /// "Stopped at chunk 3 / 10" (`what`: Stopped, Failed).
+    fn end_label(&self, what: &str) -> String {
+        format!(
+            "{what} at chunk {} / {}",
+            self.done_chunks, self.total_chunks
+        )
+    }
+}
+
+/// "1h 5m", "4m 10s" or "33s".
+fn short_duration(d: Duration) -> String {
+    let secs = d.as_secs_f64().round() as u64;
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}h {m}m")
+    } else if m > 0 {
+        format!("{m}m {s}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
+/// "Post-processing: denoising 3 / 10", with the project when there are
+/// several.
+fn post_label(project: Option<&str>, step: &str) -> String {
+    match project {
+        Some(p) => format!("Post-processing '{p}': {step}"),
+        None => format!("Post-processing: {step}"),
     }
 }
 
@@ -1958,11 +2085,75 @@ mod tests {
         assert_eq!(t, "INFO | ✓ fertig\n");
     }
 
+    fn segments(projects: &[(&str, &[&str])]) -> SegmentsByProject {
+        projects
+            .iter()
+            .map(|(name, texts)| {
+                let segs = texts
+                    .iter()
+                    .map(|t| crate::segment::Segment::with_text(*t))
+                    .collect();
+                (name.to_string(), segs)
+            })
+            .collect()
+    }
+
     #[test]
-    fn eta_label() {
-        assert_eq!(progress_label(0, 0, None), "");
-        assert_eq!(progress_label(2, 10, None), "Chunk 2 / 10");
-        assert!(progress_label(2, 10, Some(Instant::now())).starts_with("Chunk 2 / 10  (ETA ~"));
+    fn synthesis_progress_is_weighted_by_text_length() {
+        let long = "x".repeat(300);
+        let segs = segments(&[("A", &["x".repeat(100).as_str(), &long]), ("B", &[&long])]);
+        let mut p = SynthProgress::new(&segs);
+        assert_eq!(p.label(), "Chunk 0 / 3");
+        assert_eq!(p.fraction(), 0.0);
+        // 100 characters in 20 s: the 600 left take 120 s.
+        p.chunk("A", 0, Some(Duration::from_secs(20)));
+        assert!((p.fraction() - 1.0 / 7.0).abs() < 1e-6);
+        assert_eq!(p.eta(), Some(Duration::from_secs(120)));
+        assert_eq!(p.label(), "Chunk 1 / 3  (ETA ~2m 0s)");
+        // The long chunk weighs three times as much: 400 characters in
+        // 90 s, the 300 left take 67.5 s.
+        p.chunk("A", 1, Some(Duration::from_secs(70)));
+        assert_eq!(p.eta(), Some(Duration::from_millis(67_500)));
+        assert_eq!(p.label(), "Chunk 2 / 3  (ETA ~1m 8s)");
+        p.chunk("B", 0, Some(Duration::from_secs(60)));
+        assert_eq!(p.fraction(), 1.0);
+        assert_eq!(p.label(), "Chunk 3 / 3");
+        assert_eq!(p.end_label("Stopped"), "Stopped at chunk 3 / 3");
+    }
+
+    #[test]
+    fn reused_chunks_do_not_shorten_the_eta() {
+        let segs = segments(&[("A", &["Satz."; 10])]);
+        let mut p = SynthProgress::new(&segs);
+        // A resumed run: eight chunks exist already.
+        for i in 0..8 {
+            p.chunk("A", i, None);
+        }
+        assert!((p.fraction() - 0.8).abs() < 1e-6);
+        assert_eq!(p.eta(), None);
+        assert_eq!(p.label(), "Chunk 8 / 10");
+        p.chunk("A", 8, Some(Duration::from_secs(150)));
+        assert_eq!(p.eta(), Some(Duration::from_secs(150)));
+        assert_eq!(p.label(), "Chunk 9 / 10  (ETA ~2m 30s)");
+    }
+
+    #[test]
+    fn durations_and_post_labels() {
+        assert_eq!(short_duration(Duration::from_secs(33)), "33s");
+        assert_eq!(short_duration(Duration::from_secs(250)), "4m 10s");
+        assert_eq!(
+            short_duration(Duration::from_secs(3 * 3600 + 25 * 60 + 9)),
+            "3h 25m"
+        );
+        assert_eq!(
+            post_label(None, "denoising 3 / 10"),
+            "Post-processing: denoising 3 / 10"
+        );
+        assert_eq!(
+            post_label(Some("Buch"), "assembling the audiobook"),
+            "Post-processing 'Buch': assembling the audiobook"
+        );
+        assert_eq!(SynthProgress::new(&IndexMap::new()).label(), "");
     }
 
     #[test]

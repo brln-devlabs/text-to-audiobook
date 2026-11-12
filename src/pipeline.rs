@@ -25,13 +25,14 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use indexmap::IndexMap;
 use regex::Regex;
 use serde_json::{Value, json};
 
-use crate::audio::assembler::{assemble, chunk_id};
+use crate::audio::assembler::{assemble_with_progress, chunk_id};
 use crate::audio::cleanup::{self, ProjectCleanup, Thresholds};
 use crate::audio::filter::denoise;
 use crate::cancel::{StopFlag, forced, stopped};
@@ -51,6 +52,89 @@ pub type Progress<'a> = &'a (dyn Fn(&str) + Sync);
 
 /// A progress callback that does nothing (messages still go to the log).
 pub fn no_progress(_: &str) {}
+
+/// What stage 2 reports to a progress display ([`generate_audio`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Stage2Event<'a> {
+    /// The synthesis of `project` begins; its chunks follow.
+    Synthesis { project: &'a str },
+    /// Chunk `index` of `project` has its audio. `spoken`: how long its
+    /// synthesis took; None when an existing WAV was reused.
+    Chunk {
+        project: &'a str,
+        index: usize,
+        spoken: Option<Duration>,
+    },
+    /// The post-processing of `project` after its synthesis (audit,
+    /// denoising, assembly): the step running now and how much of the
+    /// whole post-processing is done (0 to 1).
+    Post {
+        project: &'a str,
+        step: &'a str,
+        done: f32,
+    },
+}
+
+/// Receiver of [`Stage2Event`]s.
+pub type Stage2Progress<'a> = &'a (dyn Fn(Stage2Event) + Sync);
+
+/// Shares of audit, denoising and assembly in the post-processing bar,
+/// as measured (release build) on 88 chunks of 25 s: 9.7 s, 1.3 s and
+/// 18 s; about the same on 40 chunks of 10 s. Without `AUTO_CLEANUP` the
+/// other two fill the bar.
+const POST_AUDIT: f32 = 0.33;
+const POST_DENOISE: f32 = 0.05;
+const POST_ASSEMBLE: f32 = 0.62;
+
+#[derive(Clone, Copy)]
+enum PostStep {
+    Audit,
+    Denoise,
+    Assemble,
+}
+
+/// Turns the steps of one project's post-processing into
+/// [`Stage2Event::Post`].
+struct PostProgress<'a> {
+    project: &'a str,
+    on_event: Option<Stage2Progress<'a>>,
+    audit: bool,
+}
+
+impl PostProgress<'_> {
+    /// `fraction` (0 to 1) of `step` is done; `what` names it.
+    fn report(&self, step: PostStep, fraction: f32, what: &str) {
+        let Some(on_event) = self.on_event else {
+            return;
+        };
+        let audit = if self.audit { POST_AUDIT } else { 0.0 };
+        let (start, width) = match step {
+            PostStep::Audit => (0.0, audit),
+            PostStep::Denoise => (audit, POST_DENOISE),
+            PostStep::Assemble => (audit + POST_DENOISE, POST_ASSEMBLE),
+        };
+        let done =
+            (start + width * fraction.clamp(0.0, 1.0)) / (audit + POST_DENOISE + POST_ASSEMBLE);
+        on_event(Stage2Event::Post {
+            project: self.project,
+            step: what,
+            done,
+        });
+    }
+
+    /// Audit round `round` (from 1): `fraction` of its audit (`redo` false)
+    /// or of synthesizing its failed chunks again (`redo` true). Each round
+    /// has an equal share, the audit the first half of it.
+    fn audit_round(&self, round: usize, redo: bool, fraction: f32, what: &str) {
+        let within = if redo {
+            0.5 + fraction / 2.0
+        } else {
+            fraction / 2.0
+        };
+        let done = ((round - 1) as f32 + within) / CLEANUP_ROUNDS as f32;
+        self.report(PostStep::Audit, done, what);
+    }
+}
 
 fn emit(progress: Progress, msg: &str) {
     log::info!("{msg}");
@@ -535,7 +619,9 @@ fn ends_paragraph(segments: &[Segment], indices: &[usize]) -> Vec<bool> {
 
 /// One `audiobook.mp3`, or `chapter_NN.mp3` per source file when the
 /// project has several and `chapter_by_chapter` is set. The provisional
-/// audiobook of stage 2 is deleted once they are written.
+/// audiobook of stage 2 is deleted once they are written. `assembled`
+/// hears how much is done (0 to 1) and what is being written.
+#[allow(clippy::too_many_arguments)]
 fn assemble_outputs(
     cfg: &Config,
     wav_paths: &[PathBuf],
@@ -544,6 +630,7 @@ fn assemble_outputs(
     project_name: &str,
     chapter_by_chapter: bool,
     progress: Progress,
+    assembled: &dyn Fn(f32, &str),
 ) -> Result<Vec<PathBuf>> {
     let outputs = assemble_files(
         cfg,
@@ -553,6 +640,7 @@ fn assemble_outputs(
         project_name,
         chapter_by_chapter,
         progress,
+        assembled,
     )?;
     if !outputs.is_empty() {
         preview::remove(final_path);
@@ -560,6 +648,7 @@ fn assemble_outputs(
     Ok(outputs)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn assemble_files(
     cfg: &Config,
     wav_paths: &[PathBuf],
@@ -568,6 +657,7 @@ fn assemble_files(
     project_name: &str,
     chapter_by_chapter: bool,
     progress: Progress,
+    assembled: &dyn Fn(f32, &str),
 ) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(final_path)?;
     let by_source = group_by_source(segments);
@@ -576,11 +666,12 @@ fn assemble_files(
         let indices: Vec<usize> = by_source.values().flatten().copied().collect();
         let wavs = wavs_for_segments(wav_paths, &indices);
         if !wavs.is_empty() {
-            let out = assemble(
+            let out = assemble_with_progress(
                 &wavs,
                 &ends_paragraph(segments, &indices),
                 &final_path.join("audiobook.mp3"),
                 &cfg.settings,
+                &|f| assembled(f, "assembling the audiobook"),
             )?;
             emit(
                 progress,
@@ -594,9 +685,15 @@ fn assemble_files(
         progress,
         &format!("[{project_name}] {} chapter(s) detected", by_source.len()),
     );
-    for (n, (source, indices)) in by_source.iter().enumerate() {
+    // Progress over the chapters, weighted by their number of WAVs.
+    let chapters: Vec<Vec<PathBuf>> = by_source
+        .values()
+        .map(|indices| wavs_for_segments(wav_paths, indices))
+        .collect();
+    let all = chapters.iter().map(Vec::len).sum::<usize>().max(1) as f32;
+    let mut before = 0;
+    for (n, ((source, indices), wavs)) in by_source.iter().zip(&chapters).enumerate() {
         let chapter_num = n + 1;
-        let wavs = wavs_for_segments(wav_paths, indices);
         if wavs.is_empty() {
             emit(
                 progress,
@@ -604,12 +701,15 @@ fn assemble_files(
             );
             continue;
         }
-        let out = assemble(
-            &wavs,
+        let what = format!("assembling chapter {chapter_num} / {}", by_source.len());
+        let out = assemble_with_progress(
+            wavs,
             &ends_paragraph(segments, indices),
             &final_path.join(format!("chapter_{chapter_num:02}.mp3")),
             &cfg.settings,
+            &|f| assembled((before as f32 + f * wavs.len() as f32) / all, &what),
         )?;
+        before += wavs.len();
         emit(
             progress,
             &format!(
@@ -630,7 +730,8 @@ pub const CLEANUP_ROUNDS: usize = 2;
 
 /// [`TtsEngine::process_all`] while a second thread rebuilds the
 /// provisional audiobook `preview_path` after every newly spoken chunk
-/// (see [`crate::preview`]). The TTS does not wait for it.
+/// (see [`crate::preview`]). The TTS does not wait for it. Every chunk is
+/// reported as [`Stage2Event::Chunk`], with the time it took when spoken.
 #[allow(clippy::too_many_arguments)]
 fn synthesize_with_preview(
     cfg: &Config,
@@ -641,7 +742,7 @@ fn synthesize_with_preview(
     preview_path: &Path,
     progress: Progress,
     stop: Option<&StopFlag>,
-    chunk_done: Option<&(dyn Fn() + Sync)>,
+    on_event: Option<Stage2Progress>,
 ) -> Result<Vec<PathBuf>> {
     let queue = PreviewQueue::default();
     let report = |m: &str| emit(progress, &format!("[{project_name}] {m}"));
@@ -649,9 +750,22 @@ fn synthesize_with_preview(
         let _end = preview::EndOnDrop(&queue);
         let worker =
             s.spawn(|| preview::run(&queue, &cfg.settings, segments, preview_path, stop, &report));
+        if let Some(on_event) = on_event {
+            on_event(Stage2Event::Synthesis {
+                project: project_name,
+            });
+        }
+        // A spoken chunk took the time since the report before it.
+        let mut last = Instant::now();
         let result = tts.process_all_with(segments, chunks_dir, stop, &mut |c| {
-            if let Some(cb) = chunk_done {
-                cb();
+            let took = last.elapsed();
+            last = Instant::now();
+            if let Some(on_event) = on_event {
+                on_event(Stage2Event::Chunk {
+                    project: project_name,
+                    index: c.index,
+                    spoken: c.synthesized.then_some(took),
+                });
             }
             if c.synthesized {
                 queue.push(c.wavs.to_vec());
@@ -764,7 +878,7 @@ pub fn generate_audio_for_project(
     progress: Progress,
     tts: Option<&mut TtsEngine>,
     stop: Option<&StopFlag>,
-    chunk_done: Option<&(dyn Fn() + Sync)>,
+    on_event: Option<Stage2Progress>,
 ) -> Result<Option<PathBuf>> {
     let project_out = output_root.join(project_name);
     if segments.is_empty() {
@@ -811,6 +925,11 @@ pub fn generate_audio_for_project(
         tts.set_review(Some(store));
         let chunks_dir = project_out.join("chunks");
         let preview_path = project_out.join("final").join(preview::PREVIEW_FILE);
+        let post = PostProgress {
+            project: project_name,
+            on_event,
+            audit: cfg.settings.auto_cleanup,
+        };
         let wav_paths = (|| -> Result<Vec<PathBuf>> {
             let mut wavs = synthesize_with_preview(
                 cfg,
@@ -821,7 +940,7 @@ pub fn generate_audio_for_project(
                 &preview_path,
                 progress,
                 stop,
-                chunk_done,
+                on_event,
             )?;
             if !cfg.settings.auto_cleanup {
                 return Ok(wavs);
@@ -835,29 +954,68 @@ pub fn generate_audio_for_project(
                     progress,
                     &format!("[{project_name}] auditing chunks (round {round})..."),
                 );
-                let results = cleanup::cleanup_noisy_chunks(
+                let what = |done, total| {
+                    let again = if round > 1 { " again" } else { "" };
+                    format!("auditing the chunk files{again}: {done} / {total}")
+                };
+                post.audit_round(round, false, 0.0, &what(0, wavs.len()));
+                let results = cleanup::cleanup_noisy_chunks_with(
                     output_root,
                     Some(&[project_name.to_string()]),
                     &report,
                     &cfg.paths.voice_ref_path(),
                     &Thresholds::default(),
+                    &|done, total| {
+                        post.audit_round(
+                            round,
+                            false,
+                            done as f32 / total as f32,
+                            &what(done, total),
+                        )
+                    },
                 );
-                let deleted = results.get(project_name).map_or(0, |r| r.deleted.len());
-                if deleted == 0 {
+                let failed = results
+                    .get(project_name)
+                    .map_or(&[][..], |r| &r.deleted[..]);
+                if failed.is_empty() {
                     emit(
                         progress,
                         &format!("[{project_name}] all chunks passed the audit"),
                     );
+                    post.report(PostStep::Audit, 1.0, "all chunks passed the audit");
                     break;
                 }
                 emit(
                     progress,
                     &format!(
-                        "[{project_name}] {deleted} chunk file(s) failed, synthesizing them again with a new seed"
+                        "[{project_name}] {} chunk file(s) failed, synthesizing them again with a new seed",
+                        failed.len()
                     ),
                 );
+                // Chunks to speak again (a failed file takes its sub-parts along).
+                let mut redo: Vec<usize> = failed
+                    .iter()
+                    .filter_map(|(name, _)| chunk_id(Path::new(name)))
+                    .collect();
+                redo.sort_unstable();
+                redo.dedup();
+                let what = |n: usize| {
+                    format!(
+                        "synthesizing {} failed chunk(s) again: {n} / {}",
+                        redo.len(),
+                        redo.len()
+                    )
+                };
+                post.audit_round(round, true, 0.0, &what(0));
+                let mut spoken = 0;
                 tts.set_seed_offset(round as u64);
-                let again = tts.process_all(segments, &chunks_dir, stop, None);
+                let again = tts.process_all_with(segments, &chunks_dir, stop, &mut |c| {
+                    if c.synthesized {
+                        spoken += 1;
+                        let fraction = spoken as f32 / redo.len().max(1) as f32;
+                        post.audit_round(round, true, fraction, &what(spoken));
+                    }
+                });
                 tts.set_seed_offset(0);
                 wavs = again?;
                 if round == CLEANUP_ROUNDS {
@@ -887,10 +1045,16 @@ pub fn generate_audio_for_project(
             progress,
             &format!("[{project_name}] denoising {} chunks...", wav_paths.len()),
         );
-        for w in &wav_paths {
+        let n = wav_paths.len();
+        for (i, w) in wav_paths.iter().enumerate() {
             if stopped(stop) {
                 break;
             }
+            post.report(
+                PostStep::Denoise,
+                i as f32 / n as f32,
+                &format!("denoising {} / {n}", i + 1),
+            );
             denoise(w)?;
         }
         if stopped(stop) {
@@ -912,6 +1076,7 @@ pub fn generate_audio_for_project(
             project_name,
             cfg.settings.chapter_by_chapter,
             progress,
+            &|f, what| post.report(PostStep::Assemble, f, what),
         )?;
         if cfg.settings.chapter_by_chapter && outputs.len() > 1 {
             emit(
@@ -934,7 +1099,7 @@ pub fn generate_audio(
     output_dir: &Path,
     progress: Progress,
     stop: Option<&StopFlag>,
-    chunk_done: Option<&(dyn Fn() + Sync)>,
+    on_event: Option<Stage2Progress>,
 ) -> Result<IndexMap<String, Option<PathBuf>>> {
     let mut results = IndexMap::new();
     if segments_by_project.is_empty() {
@@ -958,7 +1123,7 @@ pub fn generate_audio(
                 progress,
                 Some(&mut tts),
                 stop,
-                chunk_done,
+                on_event,
             )?;
             results.insert(name.clone(), r);
         }
@@ -1056,6 +1221,7 @@ pub fn assemble_final_for_project(
         project_name,
         cfg.settings.chapter_by_chapter,
         progress,
+        &|_, _| {},
     )?;
     Ok(outputs.into_iter().next())
 }
@@ -1291,6 +1457,101 @@ mod tests {
         assert_eq!(again, order);
     }
 
+    /// A [`Stage2Event`] with owned strings; `Chunk`: spoken or reused.
+    #[derive(Debug, Clone, PartialEq)]
+    enum Seen {
+        Chunk(String, usize, bool),
+        Post(String, String, f32),
+    }
+
+    #[derive(Default)]
+    struct Recorder(std::sync::Mutex<Vec<Seen>>);
+
+    impl Recorder {
+        fn cb(&self) -> impl Fn(Stage2Event) + Sync + '_ {
+            |e| {
+                let e = match e {
+                    Stage2Event::Synthesis { .. } => return,
+                    Stage2Event::Chunk {
+                        project,
+                        index,
+                        spoken,
+                    } => Seen::Chunk(project.into(), index, spoken.is_some()),
+                    Stage2Event::Post {
+                        project,
+                        step,
+                        done,
+                    } => Seen::Post(project.into(), step.into(), done),
+                };
+                self.0.lock().unwrap().push(e);
+            }
+        }
+
+        fn take(self) -> Vec<Seen> {
+            self.0.into_inner().unwrap()
+        }
+    }
+
+    /// The post-processing steps of `project`: (step, done).
+    fn post_of(seen: &[Seen], project: &str) -> Vec<(String, f32)> {
+        seen.iter()
+            .filter_map(|e| match e {
+                Seen::Post(p, step, done) if p == project => Some((step.clone(), *done)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn audit_rounds_show_in_the_post_processing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = cfg(dir.path());
+        // The mock TTS speaks silence, so every chunk fails both rounds.
+        c.settings.auto_cleanup = true;
+        std::fs::write(
+            c.paths.input_dir.join("Kurz.md"),
+            "Erster Absatz.\n\nZweiter Absatz.",
+        )
+        .unwrap();
+        let input = c.paths.input_dir.clone();
+        let out = c.paths.output_dir.clone();
+        let segs = prepare_segments(&c, &input, &out, &no_progress, None, None).unwrap();
+        assert_eq!(segs["Kurz"].len(), 2);
+        let seen = Recorder::default();
+        generate_audio(&c, &segs, &out, &no_progress, None, Some(&seen.cb())).unwrap();
+        let seen = seen.take();
+        // Speaking chunks again in the audit is post-processing, not new chunks.
+        let chunks = seen.iter().filter(|e| matches!(e, Seen::Chunk(..))).count();
+        assert_eq!(chunks, 2, "{seen:?}");
+        let post = post_of(&seen, "Kurz");
+        assert!(post.windows(2).all(|w| w[0].1 <= w[1].1), "{post:?}");
+        // Where on the bar `step` was shown (the last time).
+        let at = |step: &str| {
+            post.iter()
+                .rev()
+                .find(|(s, _)| s == step)
+                .unwrap_or_else(|| panic!("{step} missing: {post:?}"))
+                .1
+        };
+        let near = |a: f32, b: f32| assert!((a - b).abs() < 1e-6, "{a} != {b}: {post:?}");
+        // Two rounds, each an audit and then speaking the failures again.
+        let audit = POST_AUDIT / (POST_AUDIT + POST_DENOISE + POST_ASSEMBLE);
+        near(at("auditing the chunk files: 0 / 2"), 0.0);
+        near(at("auditing the chunk files: 2 / 2"), audit * 0.25);
+        near(at("auditing the chunk files again: 0 / 2"), audit * 0.5);
+        near(at("auditing the chunk files again: 2 / 2"), audit * 0.75);
+        near(
+            at("synthesizing 2 failed chunk(s) again: 1 / 2"),
+            audit * 0.875,
+        );
+        near(at("synthesizing 2 failed chunk(s) again: 2 / 2"), audit);
+        near(at("denoising 1 / 2"), audit);
+        assert_eq!(
+            post.last().unwrap(),
+            &("assembling the audiobook".to_string(), 1.0)
+        );
+    }
+
     #[test]
     fn end_to_end_with_mock_models() {
         let dir = tempfile::tempdir().unwrap();
@@ -1330,12 +1591,61 @@ mod tests {
         assert_eq!(cached["Book"].len(), 3);
 
         let out = c.paths.output_dir.clone();
-        let done = std::sync::atomic::AtomicUsize::new(0);
-        let cb = || {
-            done.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        };
-        let res = generate_audio(&c, &segs, &out, &no_progress, None, Some(&cb)).unwrap();
-        assert_eq!(done.load(std::sync::atomic::Ordering::SeqCst), 4);
+        let seen = Recorder::default();
+        let res = generate_audio(&c, &segs, &out, &no_progress, None, Some(&seen.cb())).unwrap();
+        let seen = seen.take();
+        let chunks: Vec<(String, usize, bool)> = seen
+            .iter()
+            .filter_map(|e| match e {
+                Seen::Chunk(p, i, spoken) => Some((p.clone(), *i, *spoken)),
+                Seen::Post(..) => None,
+            })
+            .collect();
+        let chunk = |p: &str, i| (p.to_string(), i, true);
+        assert_eq!(
+            chunks,
+            [
+                chunk("Book", 0),
+                chunk("Book", 1),
+                chunk("Book", 2),
+                chunk("Kurz", 0)
+            ]
+        );
+        // Each project: its chunks, then its post-processing up to 1.
+        let kinds: Vec<&str> = seen
+            .iter()
+            .map(|e| match e {
+                Seen::Chunk(p, ..) | Seen::Post(p, ..) => p.as_str(),
+            })
+            .collect();
+        let book = kinds.iter().filter(|p| **p == "Book").count();
+        assert!(kinds[..book].iter().all(|p| *p == "Book"), "{seen:?}");
+        for project in ["Book", "Kurz"] {
+            let post = post_of(&seen, project);
+            assert!(post.windows(2).all(|w| w[0].1 <= w[1].1), "{post:?}");
+            assert_eq!(post.last().unwrap().1, 1.0, "{post:?}");
+        }
+        assert!(
+            post_of(&seen, "Book")
+                .iter()
+                .any(|(s, _)| s == "assembling chapter 2 / 2")
+        );
+        assert!(
+            post_of(&seen, "Kurz")
+                .iter()
+                .any(|(s, _)| s == "denoising 1 / 1")
+        );
+
+        // Run again: every chunk is reused, none reported as spoken.
+        let seen = Recorder::default();
+        generate_audio(&c, &segs, &out, &no_progress, None, Some(&seen.cb())).unwrap();
+        let seen = seen.take();
+        let reused = seen
+            .iter()
+            .filter(|e| matches!(e, Seen::Chunk(_, _, false)))
+            .count();
+        assert_eq!(reused, 4, "{seen:?}");
+        assert!(!seen.iter().any(|e| matches!(e, Seen::Chunk(_, _, true))));
         assert_eq!(
             res["Book"].as_deref(),
             Some(out.join("Book/final/chapter_01.mp3").as_path())
@@ -1424,8 +1734,10 @@ mod tests {
         // Stopped after two chunks: the preview holds exactly those two.
         let stop = StopFlag::new();
         let done = std::sync::atomic::AtomicUsize::new(0);
-        let cb = || {
-            if done.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+        let cb = |e: Stage2Event| {
+            if matches!(e, Stage2Event::Chunk { .. })
+                && done.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+            {
                 stop.set();
             }
         };

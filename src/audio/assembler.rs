@@ -177,15 +177,24 @@ struct Source<'a> {
     denoise: bool,
     /// Asked before every chunk; true gives up with [`Aborted`].
     abort: Option<&'a dyn Fn() -> bool>,
+    /// Told before every chunk how much of the whole job is done (0 to 1).
+    progress: Option<&'a dyn Fn(f32)>,
 }
 
+/// Share of the loudness measuring pass in [`render`]; the writing pass,
+/// which also encodes the MP3, takes the rest (measured: 2.2 s of 18 s).
+const MEASURE_SHARE: f32 = 0.12;
+
 /// Mix the chunks with crossfades and the pauses of `plan` at `rate`.
+/// `span`: the part of the whole job this pass covers, for
+/// `source.progress`.
 fn mix(
     chunk_wavs: &[PathBuf],
     plan: &[Option<u32>],
     rate: u32,
     crossfade_ms: u32,
     source: Source,
+    span: (f32, f32),
     sink: &mut Sink,
 ) -> Result<usize> {
     let frames = |ms: u32| (ms as u64 * rate as u64 / 1000) as usize;
@@ -196,6 +205,9 @@ fn mix(
     for (i, wav_path) in chunk_wavs.iter().enumerate() {
         if source.abort.is_some_and(|abort| abort()) {
             return Err(Aborted.into());
+        }
+        if let Some(progress) = source.progress {
+            progress(span.0 + (span.1 - span.0) * i as f32 / chunk_wavs.len() as f32);
         }
         log::trace!("Loading chunk {i}: {}", wav_path.display());
         let mut audio = read_wav(wav_path)?;
@@ -377,6 +389,7 @@ fn loudness_gain_db(
         rate,
         settings.crossfade_ms,
         source,
+        (0.0, MEASURE_SHARE),
         &mut |s| {
             meter.process(s);
             Ok(())
@@ -416,6 +429,7 @@ fn render(
         settings.silence_after_paragraph_ms,
     );
     let gain_db = loudness_gain_db(chunk_wavs, &plan, rate, settings, source, log_level)?;
+    let measured = settings.loudness_target_lufs < 0;
     let mut writer = Writer::new(wav_out, mp3_out, rate, gain_db, log_level)?;
     let frames = mix(
         chunk_wavs,
@@ -423,9 +437,13 @@ fn render(
         rate,
         settings.crossfade_ms,
         source,
+        (if measured { MEASURE_SHARE } else { 0.0 }, 1.0),
         &mut |s| writer.write(s),
     )?;
     writer.finish()?;
+    if let Some(progress) = source.progress {
+        progress(1.0);
+    }
     Ok(frames as f64 / rate as f64)
 }
 
@@ -438,6 +456,18 @@ pub fn assemble(
     ends_paragraph: &[bool],
     out_path: &Path,
     settings: &crate::config::Settings,
+) -> Result<PathBuf> {
+    assemble_with_progress(chunk_wavs, ends_paragraph, out_path, settings, &|_| {})
+}
+
+/// [`assemble`], telling `progress` how much is done (0 to 1) before every
+/// chunk it reads and once more at the end.
+pub fn assemble_with_progress(
+    chunk_wavs: &[PathBuf],
+    ends_paragraph: &[bool],
+    out_path: &Path,
+    settings: &crate::config::Settings,
+    progress: &dyn Fn(f32),
 ) -> Result<PathBuf> {
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -457,7 +487,10 @@ pub fn assemble(
             Some(&wav_out),
             &mp3_out,
             settings,
-            Source::default(),
+            Source {
+                progress: Some(progress),
+                ..Source::default()
+            },
             log::Level::Info,
         )?;
         log::info!("Exported WAV: {} ({secs:.1} s)", wav_out.display());
@@ -503,6 +536,7 @@ pub fn assemble_preview(
     let source = Source {
         denoise: true,
         abort: Some(abort),
+        progress: None,
     };
     let result = render(
         chunk_wavs,
@@ -635,6 +669,34 @@ mod tests {
         let mut m = crate::audio::loudness::LoudnessMeter::new(wav.sample_rate);
         m.process(&wav.samples);
         m.integrated_lufs().unwrap()
+    }
+
+    #[test]
+    fn assembly_progress_rises_to_one_over_both_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let wavs = tone_chunks(dir.path(), 0.1, 4);
+        let out = dir.path().join("out.mp3");
+        let run = |settings: &Settings| {
+            let seen = std::sync::Mutex::new(Vec::new());
+            assemble_with_progress(&wavs, &[], &out, settings, &|p| {
+                seen.lock().unwrap().push(p)
+            })
+            .unwrap();
+            seen.into_inner().unwrap()
+        };
+        // Measuring pass, then the writing pass, then done.
+        let seen = run(&Settings::default());
+        assert_eq!(seen.len(), 2 * wavs.len() + 1);
+        assert!(seen.windows(2).all(|w| w[0] < w[1]), "{seen:?}");
+        assert_eq!(seen[0], 0.0);
+        assert_eq!(seen[wavs.len()], MEASURE_SHARE);
+        assert_eq!(*seen.last().unwrap(), 1.0);
+        // Without loudness only the writing pass, over the whole bar.
+        let seen = run(&Settings {
+            loudness_target_lufs: 0,
+            ..Settings::default()
+        });
+        assert_eq!(seen, [0.0, 0.25, 0.5, 0.75, 1.0]);
     }
 
     #[test]

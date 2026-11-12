@@ -268,6 +268,7 @@ The narrator voice is locked after the first chunk. Every following chunk uses t
 - **CLI and Docker** run the pipeline headless; the GUI is optional (feature `gui`).
 - **Chapter order:** stage 2 and stage 4 number and join chapters in reading order. The Python version sorted chapters alphabetically, so `10_…` came before `2_…`.
 - **Two stage buttons:** "Prepare Segments" and "Generate Audio"; the audit runs inside "Generate Audio" when `AUTO_CLEANUP` is on and regenerates failed chunks with a new seed (the same seed would give the same result).
+- **Progress bar:** during "Generate Audio" the bar first shows only the synthesis, weighted by text length (a long chunk split into sub-parts counts for more). The ETA is based only on the chunks spoken in this run, so the reused chunks of an interrupted run do not make it too short. Then the bar starts again from 0 for the post-processing of each project (audit, denoising, assembly).
 - **Voice-match check is active:** the MFCC check of the audit needed librosa, which was not a dependency, so the Python version skipped it. The Rust version computes the same MFCCs natively.
 - **ID3 tags** are stored in the WAV's RIFF `ID3 ` chunk and survive denoising and cleanup; the Python version prepended them to the file, and the next denoise removed them.
 - **Long books** are assembled in a streaming fashion (constant memory instead of repeated in-memory copies).
