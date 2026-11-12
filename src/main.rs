@@ -96,7 +96,12 @@ fn cached(cfg: &Config, input: &std::path::Path, cli: &Cli) -> SegmentsByProject
 }
 
 /// Interactive number review in the terminal.
-fn review_cli(cfg: &Config, input: &std::path::Path, cli: &Cli) -> Result<()> {
+fn review_cli(
+    cfg: &Config,
+    input: &std::path::Path,
+    output: &std::path::Path,
+    cli: &Cli,
+) -> Result<()> {
     use std::io::{BufRead, Write};
     use text_to_audiobook::review::{ReviewStore, pending};
     if !cfg.settings.normalize_numbers {
@@ -108,6 +113,17 @@ fn review_cli(cfg: &Config, input: &std::path::Path, cli: &Cli) -> Result<()> {
     }
     let stdin = std::io::stdin();
     let mut lines = stdin.lock().lines();
+    // spoken.txt and review.txt follow the decisions.
+    let write =
+        |name: &str, segments: &[text_to_audiobook::segment::Segment]| match pipeline::write_texts(
+            cfg, name, segments, output,
+        ) {
+            Ok(p) => println!(
+                "{name}: texts updated in {}",
+                p.parent().unwrap_or(&p).display()
+            ),
+            Err(e) => eprintln!("{name}: could not write texts: {e:#}"),
+        };
     for (name, segments) in &segs {
         let mut store = ReviewStore::load(&cfg.paths.project_cache_dir(name));
         let items = pending(name, segments, &cfg.settings, &store);
@@ -129,12 +145,14 @@ fn review_cli(cfg: &Config, input: &std::path::Path, cli: &Cli) -> Result<()> {
                 print!("> ");
                 std::io::stdout().flush()?;
                 let Some(line) = lines.next() else {
+                    write(name, segments);
                     return Ok(());
                 };
                 let line = line?;
                 match line.trim() {
                     "q" => {
                         store.save()?;
+                        write(name, segments);
                         return Ok(());
                     }
                     "s" => break None,
@@ -175,6 +193,7 @@ fn review_cli(cfg: &Config, input: &std::path::Path, cli: &Cli) -> Result<()> {
                 store.save()?;
             }
         }
+        write(name, segments);
     }
     Ok(())
 }
@@ -281,7 +300,7 @@ fn run(cli: Cli) -> Result<()> {
             };
             pipeline::fix_languages(&cfg, &names)?;
         }
-        Command::Review => review_cli(&cfg, &input, &cli)?,
+        Command::Review => review_cli(&cfg, &input, &output, &cli)?,
         Command::Normalize { text } => {
             let input = match text {
                 Some(t) => t.clone(),
