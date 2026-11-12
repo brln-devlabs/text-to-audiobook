@@ -636,7 +636,11 @@ pub fn write_texts(
         for (i, seg) in segments.iter().enumerate() {
             if source != Some(seg.source_file.as_str()) {
                 let chapter = seg.chapter_title.as_deref().unwrap_or(&seg.source_file);
-                out.push_str(&format!("\n## {chapter} ({})\n\n", seg.source_file));
+                if chapter == seg.source_file {
+                    out.push_str(&format!("\n## {chapter}\n\n"));
+                } else {
+                    out.push_str(&format!("\n## {chapter} ({})\n\n", seg.source_file));
+                }
                 source = Some(&seg.source_file);
             } else if !in_paragraph {
                 out.push('\n');

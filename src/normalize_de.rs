@@ -383,6 +383,14 @@ pub fn roman_value(s: &str) -> Option<u64> {
     (to_roman(total) == s).then_some(total)
 }
 
+/// True if the text after a letter is a section number ("C.1"): the letter
+/// is a label, not a Roman numeral.
+pub(crate) fn roman_is_label(after: &str) -> bool {
+    after
+        .strip_prefix('.')
+        .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))
+}
+
 /// Words after which a Roman numeral is a plain number ("Kapitel IV").
 pub(crate) const ROMAN_KEYWORDS: &[&str] = &[
     "Kapitel",
@@ -450,6 +458,10 @@ static ABBREVIATIONS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         (r"\bJh\.", "Jahrhundert"),
         (r"\bMio\.", "Millionen"),
         (r"\bMrd\.", "Milliarden"),
+        (r"\bAbb\.", "Abbildung"),
+        (r"\bTab\.", "Tabelle"),
+        (r"\bKap\.", "Kapitel"),
+        (r"\bAbschn\.", "Abschnitt"),
     ]
     .into_iter()
     .map(|(p, r)| (re(p), r))
@@ -468,6 +480,113 @@ static SENTENCE_ABBREVIATIONS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::
 });
 
 static PAGE: LazyLock<Regex> = LazyLock::new(|| re(r"\bS\.\s?(\d)"));
+static PAGES: LazyLock<Regex> = LazyLock::new(|| re(r"\bpp\.\s?(\d)"));
+
+/// Words in front of a section number ("Abschnitt 3.3", "Anhang B.1").
+const SECTION_KEYWORDS: &str = "Abschnitt|Abschnitte|Abschnitten|Kapitel|Kapiteln|Anhang|Anhänge|Anhängen|Tabelle|Tabellen|Abbildung|Abbildungen|Teil|Gleichung|Formel|Algorithmus|Definition|Satz|Lemma|Theorem|Version|Section|Appendix|Table|Figure|Fig|Eq";
+static SECTION: LazyLock<Regex> = LazyLock::new(|| {
+    re(&format!(
+        r"\b({SECTION_KEYWORDS})(\.?\s+)((?:[A-Z]|\d{{1,3}})(?:\.\d{{1,3}})+)\b"
+    ))
+});
+/// "B.1" / "C.2.3": appendix-style numbers without a keyword.
+static LETTER_SECTION: LazyLock<Regex> =
+    LazyLock::new(|| re(r"\b([A-Z])\.(\d{1,3}(?:\.\d{1,3})*)\b"));
+/// "arXiv:2108.01624v2" is read digit by digit.
+static ARXIV: LazyLock<Regex> =
+    LazyLock::new(|| re(r"\b(arXiv):?\s?(\d{4})\.(\d{4,5})(?:v(\d+))?\b"));
+/// Model sizes: "125M", "6B", "1.3B" (millions, billions, trillions).
+static MAGNITUDE: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\d+(?:[.,]\d+)?)([MBT])\b"));
+/// Version numbers glued to a name: "SQuAD2.0", "GPT-3.5".
+static VERSION: LazyLock<Regex> = LazyLock::new(|| re(r"(\p{L})(-?)(\d+(?:\.\d+)+)\b"));
+/// Superscript digits after a number are an exponent: "10²".
+static EXPONENT: LazyLock<Regex> = LazyLock::new(|| re(r"(\d)([¹²³⁰⁴⁵⁶⁷⁸⁹]+)"));
+static LESS: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[\s(\[])<\s?"));
+static GREATER: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[\s(\[])>\s?"));
+static APPROX: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[\s(\[])~\s?(\d)"));
+static MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| re(r"[ \t]{2,}"));
+static DAY_RANGE: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"\b(\d{1,2})\.\s?[–-]\s?(\d{1,2})\.\s+(Januar|Jänner|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\b",
+    )
+});
+
+/// Mathematical symbols in words: "n=11", "s ∈ D", "BLEU > 0,75".
+fn symbols(text: &str) -> String {
+    let mut s = text.to_string();
+    for (sym, word) in [
+        ("≠", " ungleich "),
+        ("≤", " kleiner gleich "),
+        ("≥", " größer gleich "),
+        ("≈", " ungefähr "),
+        ("∉", " nicht Element von "),
+        ("∈", " Element von "),
+        ("×", " mal "),
+        ("±", " plus minus "),
+        ("^", " hoch "),
+        ("=", " gleich "),
+        ("©", " Copyright "),
+    ] {
+        s = s.replace(sym, word);
+    }
+    s = LESS.replace_all(&s, "${1}kleiner als ").into_owned();
+    s = GREATER.replace_all(&s, "${1}größer als ").into_owned();
+    s = APPROX.replace_all(&s, "${1}ungefähr $2").into_owned();
+    let s = MULTI_SPACE.replace_all(&s, " ");
+    // Keep the original edges ("© 2023" at the start must not gain a space).
+    let lead = text.len() - text.trim_start().len();
+    let trail = text.len() - text.trim_end().len();
+    format!(
+        "{}{}{}",
+        &text[..lead],
+        s.trim(),
+        &text[text.len() - trail..]
+    )
+}
+
+/// "3.3" -> "drei Punkt drei", "B.1" -> "B Punkt eins".
+fn section_number(s: &str) -> String {
+    s.split('.')
+        .map(|p| match p.parse::<u64>() {
+            Ok(n) => cardinal(n),
+            Err(_) => p.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" Punkt ")
+}
+
+/// "125" + "M" -> "hundertfünfundzwanzig Millionen".
+fn magnitude(num: &str, unit: &str) -> String {
+    let (one, many) = match unit {
+        "M" => ("eine Million", "Millionen"),
+        "B" => ("eine Milliarde", "Milliarden"),
+        _ => ("eine Billion", "Billionen"),
+    };
+    if num == "1" {
+        one.to_string()
+    } else {
+        format!("{} {many}", number_words(num))
+    }
+}
+
+/// Superscript digits as ASCII digits.
+fn superscript_digits(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '⁰' => '0',
+            '¹' => '1',
+            '²' => '2',
+            '³' => '3',
+            '⁴' => '4',
+            '⁵' => '5',
+            '⁶' => '6',
+            '⁷' => '7',
+            '⁸' => '8',
+            '⁹' => '9',
+            o => o,
+        })
+        .collect()
+}
 static ROMAN_AFTER_KEYWORD: LazyLock<Regex> = LazyLock::new(|| {
     re(&format!(
         r"\b({})(\.?\s+)([IVXLC]+)\b",
@@ -487,12 +606,12 @@ static TIME: LazyLock<Regex> =
     LazyLock::new(|| re(r"\b([01]?\d|2[0-3])(?:[:.]([0-5]\d))?\s?Uhr\b"));
 static ORDINAL: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\d{1,4})\.(\s+)(\p{L})"));
 static RANGE: LazyLock<Regex> =
-    LazyLock::new(|| re(r"(^|[^\d.,\-–])(\d{1,4})\s?[–-]\s?(\d{1,4})($|[^\d.,\-–])"));
+    LazyLock::new(|| re(r"(^|[^\d.,\-–])(\d{1,4})\s?[–-]\s?(\d{1,4})($|[^\d.,\-–]|[.,](?:\s|$))"));
 static CURRENCY_PREFIX: LazyLock<Regex> =
     LazyLock::new(|| re(r"(€|\$)\s?(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+\.\d+|\d+(?:,\d+)?)"));
 static WITH_UNIT: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"\b(\d{1,3}(?:\.\d{3})+(?:,(?:\d+|–|-))?|\d+\.\d+|\d+(?:,(?:\d+|–|-))?)\s?(?:(%|€|\$|°C|°)|(km/h|km|kg|cm|mm|ml|mg|m|g|l|h|min|EUR|Euro|Prozent|Dollar)\b)",
+        r"\b(\d{1,3}(?:\.\d{3})+(?:,(?:\d+|–|-))?|\d+\.\d+|\d+(?:,(?:\d+|–|-))?)\s?(?:(%|€|\$|°C|°)|(km/h|km|kg|cm|mm|ml|mg|ms|m|g|l|h|min|GB|MB|TB|KB|kB|GHz|MHz|EUR|Euro|Prozent|Dollar)\b)",
     )
 });
 static NEGATIVE: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[\s(])[-–−](\d)"));
@@ -502,7 +621,13 @@ static NUMBER: LazyLock<Regex> =
 
 /// Spell out numbers, dates, times, units and abbreviations in German text.
 pub fn normalize(text: &str) -> String {
-    let mut s = text.to_string();
+    // 10² -> 10 hoch 2
+    let s = EXPONENT
+        .replace_all(text, |c: &Captures| {
+            format!("{} hoch {}", &c[1], superscript_digits(&c[2]))
+        })
+        .into_owned();
+    let mut s = symbols(&s);
 
     for (r, word) in SENTENCE_ABBREVIATIONS.iter() {
         s = r
@@ -516,14 +641,55 @@ pub fn normalize(text: &str) -> String {
         s = r.replace_all(&s, *word).into_owned();
     }
     s = PAGE.replace_all(&s, "Seite $1").into_owned();
+    s = PAGES.replace_all(&s, "Seiten $1").into_owned();
 
-    // Kapitel IV -> Kapitel vier
-    s = ROMAN_AFTER_KEYWORD
-        .replace_all(&s, |c: &Captures| match roman_value(&c[3]) {
-            Some(v) => format!("{}{}{}", &c[1], &c[2], cardinal(v)),
-            None => c[0].to_string(),
+    // arXiv:2108.01624 -> arXiv zwei eins null acht Punkt null eins sechs zwei vier
+    s = ARXIV
+        .replace_all(&s, |c: &Captures| {
+            let mut out = format!("{} {} Punkt {}", &c[1], digits(&c[2]), digits(&c[3]));
+            if let Some(v) = c.get(4) {
+                out.push_str(&format!(" Version {}", number_words(v.as_str())));
+            }
+            out
         })
         .into_owned();
+
+    // Abschnitt 3.3 -> Abschnitt drei Punkt drei; Anhang B.1 -> Anhang B Punkt eins
+    s = SECTION
+        .replace_all(&s, |c: &Captures| {
+            format!("{}{}{}", &c[1], &c[2], section_number(&c[3]))
+        })
+        .into_owned();
+    s = LETTER_SECTION
+        .replace_all(&s, |c: &Captures| {
+            format!("{} Punkt {}", &c[1], section_number(&c[2]))
+        })
+        .into_owned();
+
+    // 1.3B -> eins Komma drei Milliarden
+    s = MAGNITUDE
+        .replace_all(&s, |c: &Captures| magnitude(&c[1], &c[2]))
+        .into_owned();
+
+    // SQuAD2.0 -> SQuAD zwei Punkt null, GPT-3.5 -> GPT-drei Punkt fünf
+    s = VERSION
+        .replace_all(&s, |c: &Captures| {
+            let sep = if c[2].is_empty() { " " } else { "-" };
+            format!("{}{sep}{}", &c[1], section_number(&c[3]))
+        })
+        .into_owned();
+
+    // Kapitel IV -> Kapitel vier. "Anhang C" and "Anhang C.1" are letters.
+    let t = s.clone();
+    s = replace_ctx(&ROMAN_AFTER_KEYWORD, &t, |c, _| {
+        let numeral = &c[3];
+        let after = &t[c.get(0).unwrap().end()..];
+        if matches!(numeral, "C" | "L") || roman_is_label(after) {
+            return None;
+        }
+        let v = roman_value(numeral)?;
+        Some(format!("{}{}{}", &c[1], &c[2], cardinal(v)))
+    });
 
     // im XIX. Jahrhundert -> im neunzehnten Jahrhundert (with clear context)
     let t = s.clone();
@@ -550,6 +716,24 @@ pub fn normalize(text: &str) -> String {
             ordinal(day, ending),
             MONTHS[month - 1],
             year(y)
+        ))
+    });
+
+    // 11.–15. September -> elfter bis fünfzehnter September
+    let t = s.clone();
+    s = replace_ctx(&DAY_RANGE, &t, |c, at| {
+        let from: u64 = c[1].parse().ok()?;
+        let to: u64 = c[2].parse().ok()?;
+        if !(1..=31).contains(&from) || !(1..=31).contains(&to) {
+            return None;
+        }
+        let (p1, p2) = prev_words(&t, at);
+        let ending = ordinal_ending(p1.as_deref(), p2.as_deref()).unwrap_or("er");
+        Some(format!(
+            "{} bis {} {}",
+            ordinal(from, ending),
+            ordinal(to, ending),
+            &c[3]
         ))
     });
 
@@ -644,6 +828,13 @@ pub fn normalize(text: &str) -> String {
                 "l" => count_with(num, "Liter", "Liter", false),
                 "h" => count_with(num, "Stunde", "Stunden", true),
                 "min" => count_with(num, "Minute", "Minuten", true),
+                "ms" => count_with(num, "Millisekunde", "Millisekunden", true),
+                "GB" => count_with(num, "Gigabyte", "Gigabyte", false),
+                "MB" => count_with(num, "Megabyte", "Megabyte", false),
+                "TB" => count_with(num, "Terabyte", "Terabyte", false),
+                "KB" | "kB" => count_with(num, "Kilobyte", "Kilobyte", false),
+                "GHz" => count_with(num, "Gigahertz", "Gigahertz", false),
+                "MHz" => count_with(num, "Megahertz", "Megahertz", false),
                 _ => c[0].to_string(),
             }
         })
@@ -795,11 +986,11 @@ mod tests {
             ("Kein Covid19 hier.", "Kein Covid19 hier."),
             (
                 "BLEU > 0,75. Dieser Wert.",
-                "BLEU > null Komma sieben fünf. Dieser Wert.",
+                "BLEU größer als null Komma sieben fünf. Dieser Wert.",
             ),
             (
                 "BLEU > 0.75. Dieser Wert.",
-                "BLEU > null Komma sieben fünf. Dieser Wert.",
+                "BLEU größer als null Komma sieben fünf. Dieser Wert.",
             ),
             (
                 "Der Faktor 1.5 reicht.",
@@ -843,5 +1034,56 @@ mod tests {
     fn text_without_numbers_is_unchanged() {
         let t = "Es war einmal ein kleiner Drache. „Hallo“, sagte er.";
         assert_eq!(normalize(t), t);
+    }
+
+    #[test]
+    fn scientific_text() {
+        let cases = [
+            (
+                "Seiten 28–53, 11.–15. September 2023.",
+                "Seiten achtundzwanzig bis dreiundfünfzig, elfter bis fünfzehnter September zweitausenddreiundzwanzig.",
+            ),
+            ("pp. 28–53", "Seiten achtundzwanzig bis dreiundfünfzig"),
+            (
+                "Seite 997–1005.",
+                "Seite neunhundertsiebenundneunzig bis tausendfünf.",
+            ),
+            ("siehe Abschnitt 3.3", "siehe Abschnitt drei Punkt drei"),
+            ("Anhang B.1 gibt", "Anhang B Punkt eins gibt"),
+            (
+                "Anhang C.1 und Anhang C",
+                "Anhang C Punkt eins und Anhang C",
+            ),
+            ("Kapitel IV", "Kapitel vier"),
+            (
+                "für 125M, 1.3B und 6B",
+                "für hundertfünfundzwanzig Millionen, eins Komma drei Milliarden und sechs Milliarden",
+            ),
+            ("Pythia-6.9B", "Pythia-sechs Komma neun Milliarden"),
+            ("1B Parameter", "eine Milliarde Parameter"),
+            (
+                "den 800GB großen Pile",
+                "den achthundert Gigabyte großen Pile",
+            ),
+            (
+                "SQuAD2.0 und GPT-3.5",
+                "SQuAD zwei Punkt null und GPT-drei Punkt fünf",
+            ),
+            (
+                "arXiv:2108.01624.",
+                "arXiv zwei eins null acht Punkt null eins sechs zwei vier.",
+            ),
+            ("(n=77)", "(n gleich siebenundsiebzig)"),
+            ("wenn LM(p) = s gilt", "wenn LM(p) gleich s gilt"),
+            ("die Abfrage s ∈ D", "die Abfrage s Element von D"),
+            ("(< 5) Änderungen", "(kleiner als fünf) Änderungen"),
+            ("etwa ~150 Zeichen", "etwa ungefähr hundertfünfzig Zeichen"),
+            ("10² Fälle", "zehn hoch zwei Fälle"),
+            ("© 2023 ACL", "Copyright zweitausenddreiundzwanzig ACL"),
+            ("Abb. 3 und Tab. 2", "Abbildung drei und Tabelle zwei"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize(input), expected, "input: {input}");
+        }
     }
 }

@@ -386,19 +386,27 @@ pub fn script_candidates(text: &str) -> BTreeSet<&'static str> {
 /// Readable chapter title from a source file name:
 /// "Chapter_01.md" -> "Chapter 01", "01_prologue" -> "01 Prologue".
 pub fn format_chapter_title(source_file: &str) -> String {
-    let stem = Path::new(source_file)
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
+    // Only a real file extension is cut: "… (Ippolito et al., 2023)" has none.
+    let lower = source_file.to_lowercase();
+    let stem = [".md", ".markdown", ".txt"]
+        .iter()
+        .find(|ext| lower.ends_with(*ext))
+        .map_or(source_file, |ext| {
+            &source_file[..source_file.len() - ext.len()]
+        });
     let name = stem.replace(['_', '-'], " ");
+    // Names written in lower case get capitals; otherwise the author's
+    // spelling stays (German nouns, "et al.", acronyms).
+    let all_lower = !name.chars().any(char::is_uppercase);
     let words: Vec<String> = name
         .split_whitespace()
         .map(|w| {
+            if !all_lower {
+                return w.to_string();
+            }
             let mut chars = w.chars();
             match chars.next() {
-                Some(first) => {
-                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
-                }
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
                 None => String::new(),
             }
         })
@@ -802,9 +810,18 @@ impl LlmNormalizer {
         let result = self.retry("detect_chapter_info", |s| {
             let data = s.ask_object(&prompt, 128, TEXT_STOPS)?;
             let chapter_number = pyval::get(&data, "chapter_number").and_then(pyval::int);
+            // A title that is not in the text is invented (often the
+            // prompt's own example "The Beginning").
             let chapter_title = pyval::get(&data, "chapter_title")
                 .map(|v| pyval::str(v).trim().to_string())
-                .filter(|t| !t.is_empty());
+                .filter(|t| !t.is_empty())
+                .filter(|t| {
+                    let found = sample.to_lowercase().contains(&t.to_lowercase());
+                    if !found {
+                        log::debug!("ignoring chapter title not found in the text: '{t}'");
+                    }
+                    found
+                });
             Ok(ChapterInfo {
                 chapter_number,
                 chapter_title,
@@ -1668,6 +1685,7 @@ impl LlmNormalizer {
                 }
             }
 
+            let mut spoken_title = None;
             if new_source {
                 let info = self.detect_chapter_info(&seg.text);
                 let (hint_number, hint_title) = hints
@@ -1684,6 +1702,7 @@ impl LlmNormalizer {
                 } else {
                     current_chapter_number = hint_number;
                 }
+                spoken_title = hint_title.clone();
                 match info.chapter_title.or(hint_title) {
                     Some(t) => {
                         current_chapter_title = t;
@@ -1698,8 +1717,16 @@ impl LlmNormalizer {
 
             let chapter_title_added = settings.vocalize_chapter_names && new_source;
             if chapter_title_added {
-                let chapter_title = format_chapter_title(&source_file);
-                text = format!("{chapter_title}. {text}");
+                // The file's first heading (the cleaner drops headings from
+                // the text), else the file name.
+                let chapter_title =
+                    spoken_title.unwrap_or_else(|| format_chapter_title(&source_file));
+                let sep = if chapter_title.ends_with(['.', '!', '?', ':']) {
+                    " "
+                } else {
+                    ". "
+                };
+                text = format!("{chapter_title}{sep}{text}");
                 report(
                     progress,
                     &format!(
@@ -1810,7 +1837,12 @@ mod tests {
     fn chapter_titles_from_file_names() {
         assert_eq!(format_chapter_title("Chapter_01.md"), "Chapter 01");
         assert_eq!(format_chapter_title("intro.txt"), "Intro");
-        assert_eq!(format_chapter_title("the-dark_TOWER"), "The Dark Tower");
+        assert_eq!(format_chapter_title("the-dark_tower"), "The Dark Tower");
+        assert_eq!(
+            format_chapter_title("Verhinderung wörtlicher Memorisierung (Ippolito et al., 2023)"),
+            "Verhinderung wörtlicher Memorisierung (Ippolito et al., 2023)"
+        );
+        assert_eq!(format_chapter_title("2_Ende"), "2 Ende");
         assert_eq!(format_chapter_title("___"), "Chapter");
     }
 
