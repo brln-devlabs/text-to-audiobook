@@ -35,9 +35,9 @@ use crate::audio::cleanup::{self, ProjectCleanup, Thresholds};
 use crate::audio::filter::denoise;
 use crate::cancel::{StopFlag, stopped};
 use crate::chunker::{Chunk, split_to_chunks};
-use crate::config::Config;
+use crate::config::{Config, Settings};
 use crate::llm::{FilePreview, LlmNormalizer, ProjectHints};
-use crate::markdown_cleaner::clean;
+use crate::markdown_cleaner::{clean, clean_with, heading_text};
 use crate::natsort::{natsorted, natural_cmp};
 use crate::pyval;
 use crate::segment::Segment;
@@ -279,15 +279,7 @@ pub fn first_heading(md: &str) -> Option<String> {
         if in_fence {
             continue;
         }
-        let Some(rest) = t.strip_prefix('#') else {
-            continue;
-        };
-        let rest = rest.trim_start_matches('#');
-        if !rest.starts_with(char::is_whitespace) {
-            continue;
-        }
-        let title = clean(rest.trim().trim_end_matches('#').trim());
-        if !title.is_empty() {
+        if let Some(title) = heading_text(t) {
             return Some(title);
         }
     }
@@ -296,7 +288,7 @@ pub fn first_heading(md: &str) -> Option<String> {
 
 fn build_chunks(
     md_files: &[PathBuf],
-    max_words: usize,
+    settings: &Settings,
     progress: Progress,
     hints: &mut ProjectHints,
 ) -> Result<Vec<Chunk>> {
@@ -306,12 +298,14 @@ fn build_chunks(
     for (n, f) in md_files.iter().enumerate() {
         let raw = std::fs::read_to_string(f)
             .map_err(|e| anyhow::anyhow!("reading {}: {e}", f.display()))?;
-        let cleaned = clean(&raw);
+        // The first heading is the chapter name (VOCALIZE_CHAPTER_NAMES);
+        // further headings are paragraphs of their own (SPEAK_HEADINGS).
+        let cleaned = clean_with(&raw, settings.speak_headings);
         let source = file_stem(f);
         hints
             .chapters
             .insert(source.clone(), (n as i64 + 1, first_heading(&raw)));
-        let file_chunks = split_to_chunks(&cleaned, max_words, &source);
+        let file_chunks = split_to_chunks(&cleaned, settings.max_words_per_chunk, &source);
         emit(
             progress,
             &format!("  {source}: {} chunk(s)", file_chunks.len()),
@@ -382,12 +376,7 @@ pub fn prepare_segments_for_project(
             story_title: Some(name.clone()),
             ..Default::default()
         };
-        let chunks = build_chunks(
-            &ordered,
-            cfg.settings.max_words_per_chunk,
-            progress,
-            &mut hints,
-        )?;
+        let chunks = build_chunks(&ordered, &cfg.settings, progress, &mut hints)?;
         if chunks.is_empty() {
             return Ok(Vec::new());
         }

@@ -163,6 +163,7 @@ impl SettingsForm {
                         field("MAX_WORDS_PER_CHUNK", "Max words per chunk", None),
                         field("NORMALIZE_NUMBERS", "Spell out numbers (German)", bools()),
                         field("REVIEW_NUMBERS", "Review uncertain numbers", bools()),
+                        field("SPEAK_HEADINGS", "Speak headings", bools()),
                     ],
                 ),
                 (
@@ -274,6 +275,7 @@ fn apply_fields<'a>(
     let bool_keys = [
         "CHAPTER_BY_CHAPTER",
         "VOCALIZE_CHAPTER_NAMES",
+        "SPEAK_HEADINGS",
         "USE_LLM",
         "NORMALIZE_NUMBERS",
         "REVIEW_NUMBERS",

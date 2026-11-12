@@ -115,6 +115,10 @@ pub struct Settings {
     pub tts_max_words_fallback: usize,
     pub chapter_by_chapter: bool,
     pub vocalize_chapter_names: bool,
+    /// Speak every heading after the first one of a file as a paragraph of
+    /// its own, with the paragraph pause before and after. The first heading
+    /// is the chapter name (`VOCALIZE_CHAPTER_NAMES`).
+    pub speak_headings: bool,
     /// Language passed to Qwen3-TTS for every segment. "auto" uses the
     /// per-segment language detected by the LLM. A fixed language avoids
     /// mispronunciation when the small LLM mislabels a chunk and skips the
@@ -172,6 +176,7 @@ impl Default for Settings {
             tts_max_words_fallback: 100,
             chapter_by_chapter: false,
             vocalize_chapter_names: false,
+            speak_headings: true,
             tts_language: "german".into(),
             tts_dtype: "bfloat16".into(),
             llm_gpu_layers: 0,
@@ -206,6 +211,7 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "TTS_MAX_WORDS_FALLBACK",
     "CHAPTER_BY_CHAPTER",
     "VOCALIZE_CHAPTER_NAMES",
+    "SPEAK_HEADINGS",
     "TTS_LANGUAGE",
     "TTS_DTYPE",
     "LLM_GPU_LAYERS",
@@ -312,6 +318,7 @@ impl Settings {
             ),
             "CHAPTER_BY_CHAPTER" => set(&mut self.chapter_by_chapter, value_to_bool(v)),
             "VOCALIZE_CHAPTER_NAMES" => set(&mut self.vocalize_chapter_names, value_to_bool(v)),
+            "SPEAK_HEADINGS" => set(&mut self.speak_headings, value_to_bool(v)),
             "TTS_LANGUAGE" => set(&mut self.tts_language, value_to_string(v)),
             "TTS_DTYPE" => set(&mut self.tts_dtype, value_to_string(v)),
             "LLM_GPU_LAYERS" => set(

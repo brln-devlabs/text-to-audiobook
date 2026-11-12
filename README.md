@@ -145,7 +145,7 @@ text-to-audiobook --mock-models run        # dry run without models (silence)
 
 Every subfolder of `input/` is one project (book), every loose `.md` file is a project of its own. Inside a folder, the reading order follows numeric prefixes (`0_Prologue.md`, `10_Chapter.md`). Otherwise names are sorted naturally with number words recognised (`Chapter_Two` after `Chapter_One`, `Kapitel_drei`), front matter (prologue, Vorwort, Einleitung, …) first and back matter (epilogue, Nachwort, Anhang, …) last; with `USE_LLM = true` the LLM decides from names and content. The first heading of each file becomes its chapter title, the project name the story title. Supported Markdown:
 
-- Headers (`#`, `##`, etc.) — stripped
+- Headers (`#`, `##`, etc.) — the first one of a file is the chapter title (spoken only with `VOCALIZE_CHAPTER_NAMES`); every further one is read as a paragraph of its own (`SPEAK_HEADINGS`, on by default)
 - **Bold**, *italic*, `inline code` — formatting removed, text preserved
 - Links `[text](url)` — link text preserved, URL removed
 - Code fences (` ``` `) — stripped entirely
@@ -195,7 +195,8 @@ Edit `settings.json` in the project root or use the settings window. Keys and de
 | `LLM_MAX_RETRIES` | 3 | attempts per LLM call |
 | `STORAGE_BACKEND` | `json` | `json` or `sqlite` |
 | `CHAPTER_BY_CHAPTER` | false | one MP3 per source file |
-| `VOCALIZE_CHAPTER_NAMES` | false | speak the chapter name (from the file name) first |
+| `VOCALIZE_CHAPTER_NAMES` | false | speak the chapter name (first heading, else the file name) first |
+| `SPEAK_HEADINGS` | true | speak every heading after a file's first one as a paragraph of its own (the first one is the chapter name) |
 | `LOG_LEVEL_CONSOLE` / `LOG_LEVEL_FILE` | `INFO` / `DEBUG` | log levels |
 | `VOICE_SOURCE` | `random` | narrator voice: `file` (recording), `design` (from the description), `random` |
 | `VOICE_REFERENCE_FILE` | – | recording for `VOICE_SOURCE = "file"` (WAV, 10–15 s) |
