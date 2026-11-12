@@ -123,6 +123,20 @@ fn enumeration_start(raw_prev: Option<&str>, next: &str) -> bool {
         && (starts_upper(next) || (next.chars().count() > 1 && !NOT_ENUMERATION.contains(&next)))
 }
 
+/// Words that join the items of an enumeration inside a sentence
+/// ("1. …, 2. … und 3. …").
+const ENUMERATION_JOINS: &[&str] = &["und", "oder", "sowie"];
+
+/// Next item of an enumeration inside a sentence: "zu: 1. einem Deal,
+/// 2. einem Ende" — `n` follows a comma, semicolon or "und", and the item
+/// before it (`last`, the last enumeration number in the text) is `n - 1`.
+fn continues_enumeration(before: &str, raw_prev: Option<&str>, last: Option<u64>, n: u64) -> bool {
+    n >= 2
+        && last == Some(n - 1)
+        && (before.trim_end().ends_with([',', ';'])
+            || raw_prev.is_some_and(|w| ENUMERATION_JOINS.contains(&w)))
+}
+
 /// "Zweitens:" for an enumeration item or heading number.
 fn enumeration_choice(n: u64) -> Choice {
     choice(
@@ -295,6 +309,8 @@ fn after_number_in_list(before: &str) -> bool {
 pub fn find_spots(text: &str) -> Vec<Spot> {
     let mut spots = Vec::new();
 
+    // Last enumeration number so far, for "1. …, 2. …" inside a sentence.
+    let mut last_enum: Option<u64> = None;
     for c in ORDINAL_SPOT.captures_iter(text) {
         let m = c.get(0).unwrap();
         let num = c.get(1).unwrap();
@@ -319,18 +335,27 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
             continue;
         }
         let (p1, p2) = prev_words(text, m.start());
-        if ordinal_ending(p1.as_deref(), p2.as_deref()).is_some() {
-            continue; // decided by the rules
-        }
         let raw_prev = prev_word_raw(text, m.start());
-        // "Seite 12. Dann" / "Platz 3. Das": noun in front, sentence ends.
-        if starts_upper(next) && raw_prev.is_some_and(starts_upper) {
-            continue;
+        let continues = continues_enumeration(before, raw_prev, last_enum, n);
+        if !continues {
+            if ordinal_ending(p1.as_deref(), p2.as_deref()).is_some() {
+                continue; // decided by the rules
+            }
+            // "Seite 12. Dann" / "Platz 3. Das": noun in front, sentence ends.
+            if starts_upper(next) && raw_prev.is_some_and(starts_upper) {
+                continue;
+            }
         }
         let original = format!("{}.", num.as_str());
-        // "2. Die Arbeiter …", "1. allseitige …": enumeration.
-        let enumeration = enumeration_start(raw_prev, next);
-        let mut choices = ordinal_choices(n, starts_upper(next), raw_prev.is_some());
+        // "2. Die Arbeiter …", "1. allseitige …", "…, 2. einem Ende": enumeration.
+        let enumeration = continues || enumeration_start(raw_prev, next);
+        if enumeration {
+            last_enum = Some(n);
+        }
+        // Enumerations all get the same order of choices, so "Apply to all
+        // identical spots" picks the same reading everywhere.
+        let mut choices =
+            ordinal_choices(n, starts_upper(next), raw_prev.is_some() && !enumeration);
         let key = if enumeration {
             choices.insert(0, enumeration_choice(n));
             ENUMERATION_KEY.to_string()
@@ -347,6 +372,7 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
         });
     }
 
+    let mut last_enum: Option<u64> = None;
     for c in ROMAN_SPOT.captures_iter(text) {
         let num = c.get(1).unwrap();
         let word = num.as_str();
@@ -375,18 +401,26 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
                 continue; // "im XIX. Jahrhundert" is decided by the rules
             }
         }
-        let after_name =
-            raw_prev.is_some_and(|p| starts_upper(p) && !p.chars().all(char::is_uppercase));
-        // "II. Kapitalistische Revolution" at the start of a sentence: enumeration.
-        let enumeration = dot && enumeration_start(raw_prev, &next);
+        // "II. Kapitalistische Revolution" at the start of a sentence, or
+        // "…, II. einem Ende": enumeration.
+        let enumeration = dot
+            && (continues_enumeration(&text[..num.start()], raw_prev, last_enum, v)
+                || enumeration_start(raw_prev, &next));
+        let after_name = !enumeration
+            && raw_prev.is_some_and(|p| starts_upper(p) && !p.chars().all(char::is_uppercase));
         // Single letters are usually initials ("Hans V. Müller") or the letter
         // itself; only "Karl V. dankte ab" style and enumerations are asked.
         if word.len() == 1 && !enumeration && (!after_name || (dot && starts_upper(&next))) {
             continue;
         }
         // Word in capitals in front: a heading or an acronym.
-        if raw_prev.is_some_and(|p| p.len() > 1 && p.chars().all(char::is_uppercase)) {
+        if !enumeration
+            && raw_prev.is_some_and(|p| p.len() > 1 && p.chars().all(char::is_uppercase))
+        {
             continue;
+        }
+        if enumeration {
+            last_enum = Some(v);
         }
         let original = format!("{word}{}", &c[2]);
         spots.push(Spot {
@@ -950,6 +984,25 @@ mod tests {
         assert_eq!(spots[1].key, ENUMERATION_KEY);
         let spots = find_spots("Forderungen: II. die Arbeiter.");
         assert_eq!(spots[0].choices[0].replacement, "Zweitens:");
+        // Items inside a sentence, after a comma or "und".
+        let text = "Dort würden Regelungen zu treffen sein zu: 1. einem Ukrainedeal, \
+                    2. einem Ende der Sanktionen, 3. einer Taiwanregelung und 4. einem Neustart.";
+        let spots = find_spots(text);
+        let first: Vec<&str> = spots
+            .iter()
+            .map(|s| s.choices[0].replacement.as_str())
+            .collect();
+        assert_eq!(first, ["Erstens:", "Zweitens:", "Drittens:", "Viertens:"]);
+        assert!(spots.iter().all(|s| s.key == ENUMERATION_KEY));
+        // Capitalized items are asked, too ("Seite 12. Dann" is not).
+        let spots = find_spots("Ziele: 1. Die Arbeiter, 2. Die Bauern.");
+        assert_eq!(spots.len(), 2);
+        assert_eq!(spots[1].choices[0].replacement, "Zweitens:");
+        let spots = find_spots("Ziele: I. die Arbeiter, II. die Bauern.");
+        assert_eq!(spots[1].choices[0].replacement, "Zweitens:");
+        // Without the item before it, a number after a comma is no enumeration.
+        let spots = find_spots("Er wurde 1. im Sprint, 2. im Weitsprung.");
+        assert!(spots.iter().all(|s| s.key != ENUMERATION_KEY));
         // Ranges and pairs are not enumerations.
         let spots = find_spots("1. und 2. Klasse waren voll.");
         assert_ne!(spots[0].choices[0].replacement, "Erstens:");
