@@ -297,7 +297,7 @@ Format: `YYYY-MM-DD HH:MM:SS,mmm | LEVEL | module | message`
 
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
-| Tests | Push to main/master/develop, PRs | `cargo test` on Linux, Windows and macOS |
+| Tests | Push to main/master/develop, PRs | `cargo test --no-default-features` on Linux (no GUI or model backends) and a CLI dry run |
 | Code Quality | Push to main/master/develop, PRs | `cargo fmt --check`, `cargo clippy` |
 | Build & Release | Git tags (v*), manual trigger | release binaries for all platforms |
 | Docker Build | Tags, main branch, manual | build and push the headless Docker image |
