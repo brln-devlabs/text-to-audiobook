@@ -421,9 +421,18 @@ pub fn format_chapter_title(source_file: &str) -> String {
 
 /// True if cached chunk metadata belongs to `text` (runs of whitespace count
 /// as one space).
+///
+/// Spans of an older sentence splitter that cut after an abbreviation
+/// ("… (z." | "B. Preisgabe …)") are not reused either.
 fn meta_matches(meta: &ChunkMeta, text: &str) -> bool {
     let cached: Vec<&str> = meta.segments.iter().map(|s| s.text.as_str()).collect();
-    !meta.segments.is_empty() && norm_ws(&cached.join(" ")) == norm_ws(text)
+    let Some((_, inner)) = cached.split_last() else {
+        return false;
+    };
+    norm_ws(&cached.join(" ")) == norm_ws(text)
+        && !inner
+            .iter()
+            .any(|s| crate::chunker::ends_with_abbreviation(s.trim_end()))
 }
 
 fn norm_ws(s: &str) -> String {
@@ -2321,6 +2330,40 @@ mod tests {
         );
         run(&mut n, &["(„ low“)"]);
         assert_eq!(run(&mut n, &["(„low“)"]), ["(„low“)"]);
+    }
+
+    #[test]
+    fn spans_cut_at_an_abbreviation_are_analyzed_again() {
+        // Emotion spans cached by the old splitter: same text, wrong cut.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let text = "Sie unterscheidet nicht (z. B. Preisgabe) und anderes.";
+        let storage = create_storage("json", &cache).unwrap();
+        storage.init_schema().unwrap();
+        storage.save_chunk_meta(
+            0,
+            &json!({
+                "segments": [
+                    {"text": "Sie unterscheidet nicht (z.", "emotion": "neutral"},
+                    {"text": "B. Preisgabe) und anderes.", "emotion": "neutral"}
+                ],
+                "ends_paragraph": true,
+                "language": "german"
+            }),
+        );
+        let mut n = LlmNormalizer::new("fake.gguf", &settings());
+        let segs = n
+            .process_all(
+                &[Chunk::new(text, true)],
+                &cache,
+                &settings(),
+                &ProjectHints::default(),
+                None,
+                None,
+            )
+            .unwrap();
+        let texts: Vec<&str> = segs.iter().map(|s| s.normalized_text.as_str()).collect();
+        assert_eq!(texts, [text]);
     }
 
     #[test]
