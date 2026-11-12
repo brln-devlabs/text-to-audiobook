@@ -504,6 +504,11 @@ static EXPONENT: LazyLock<Regex> = LazyLock::new(|| re(r"(\d)([¹²³⁰⁴⁵�
 static LESS: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[\s(\[])<\s?"));
 static GREATER: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[\s(\[])>\s?"));
 static APPROX: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[\s(\[])~\s?(\d)"));
+static PLUS: LazyLock<Regex> = LazyLock::new(|| re(r"\s\+\s"));
+/// "%" without a number in front ("% Beispiele mit Treffer").
+static LONE_PERCENT: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[\s(])%"));
+/// "0,53–0,59" -> "0,53 bis 0,59"
+static DECIMAL_RANGE: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\d+,\d+)\s?[–-]\s?(\d+,\d+)\b"));
 static MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| re(r"[ \t]{2,}"));
 static DAY_RANGE: LazyLock<Regex> = LazyLock::new(|| {
     re(
@@ -526,12 +531,16 @@ fn symbols(text: &str) -> String {
         ("^", " hoch "),
         ("=", " gleich "),
         ("©", " Copyright "),
+        ("⇒", " zu "),
+        ("→", " zu "),
     ] {
         s = s.replace(sym, word);
     }
     s = LESS.replace_all(&s, "${1}kleiner als ").into_owned();
     s = GREATER.replace_all(&s, "${1}größer als ").into_owned();
     s = APPROX.replace_all(&s, "${1}ungefähr $2").into_owned();
+    s = PLUS.replace_all(&s, " plus ").into_owned();
+    s = LONE_PERCENT.replace_all(&s, "${1}Prozent").into_owned();
     let s = MULTI_SPACE.replace_all(&s, " ");
     // Keep the original edges ("© 2023" at the start must not gain a space).
     let lead = text.len() - text.trim_start().len();
@@ -821,6 +830,8 @@ pub fn normalize(text: &str) -> String {
         Some(format!("{}{}{}", ordinal(n, ending), &c[2], &c[3]))
     });
 
+    s = DECIMAL_RANGE.replace_all(&s, "$1 bis $2").into_owned();
+
     // 1990–1995 -> 1990 bis 1995
     for _ in 0..2 {
         s = RANGE.replace_all(&s, "$1$2 bis $3$4").into_owned();
@@ -1107,6 +1118,13 @@ mod tests {
             ("10² Fälle", "zehn hoch zwei Fälle"),
             ("© 2023 ACL", "Copyright zweitausenddreiundzwanzig ACL"),
             ("Abb. 3 und Tab. 2", "Abbildung drei und Tabelle zwei"),
+            (
+                "bei etwa 0,53–0,59, GPT-Neo",
+                "bei etwa null Komma fünf drei bis null Komma fünf neun, GPT-Neo",
+            ),
+            ("% Beispiele mit Treffer", "Prozent Beispiele mit Treffer"),
+            ("WikiAuto + Turk", "WikiAuto plus Turk"),
+            ("„claim“ ⇒ „claims“", "„claim“ zu „claims“"),
         ];
         for (input, expected) in cases {
             assert_eq!(normalize(input), expected, "input: {input}");

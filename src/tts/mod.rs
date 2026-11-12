@@ -577,6 +577,11 @@ impl TtsEngine {
         spoken_text(&self.settings, None, 0, text, language)
     }
 
+    /// Spoken text of chunk `i` as it was synthesized (`chunk_NNNNNN.txt`).
+    pub fn text_record(output_dir: &Path, i: usize) -> PathBuf {
+        output_dir.join(format!("chunk_{i:06}.txt"))
+    }
+
     /// Existing WAVs of chunk `i`: `chunk_NNN.wav`, or `_0`, `_1`, ...
     pub fn existing_parts(output_dir: &Path, i: usize) -> Vec<PathBuf> {
         let base = output_dir.join(format!("chunk_{i:06}.wav"));
@@ -616,8 +621,28 @@ impl TtsEngine {
                 break;
             }
             let out_path = output_dir.join(format!("chunk_{i:06}.wav"));
+            let language = resolve_language(&self.settings, seg.language.as_deref());
+            let text = self.prepare_segment_text(i, &seg.normalized_text, &language);
+            // The spoken text of every WAV is kept next to it, so audio of
+            // an older text version is not reused under the same number.
+            let record = Self::text_record(output_dir, i);
 
-            let existing = Self::existing_parts(output_dir, i);
+            let mut existing = Self::existing_parts(output_dir, i);
+            if !existing.is_empty() {
+                match std::fs::read_to_string(&record) {
+                    Ok(old) if old != text => {
+                        log::info!("Chunk {i}: text changed since it was generated, regenerating");
+                        for p in existing.drain(..) {
+                            let _ = std::fs::remove_file(p);
+                        }
+                    }
+                    Ok(_) => {}
+                    // Output of an older version: adopt the current text.
+                    Err(_) => {
+                        let _ = std::fs::write(&record, &text);
+                    }
+                }
+            }
             if !existing.is_empty() {
                 log::debug!(
                     "Chunk {i} already exists ({} part(s)), skipping",
@@ -636,13 +661,11 @@ impl TtsEngine {
                 continue;
             }
 
-            let language = resolve_language(&self.settings, seg.language.as_deref());
             let ref_audio = if i == 0 {
                 None
             } else {
                 self.anchor_path.clone()
             };
-            let text = self.prepare_segment_text(i, &seg.normalized_text, &language);
             let result = self.synthesize(&text, ref_audio.as_deref(), &out_path, &language, stop);
             let paths = match result {
                 Ok(p) => p,
@@ -655,6 +678,9 @@ impl TtsEngine {
                 }
                 Err(e) => return Err(e),
             };
+            if let Err(e) = std::fs::write(&record, &text) {
+                log::warn!("Could not write {}: {e}", record.display());
+            }
             if i == 0 {
                 self.anchor_path = paths.first().cloned();
             }
@@ -803,6 +829,37 @@ pub mod tests {
             .unwrap();
         assert_eq!(wavs.len(), 3);
         assert_eq!(fake.clone_calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn changed_text_regenerates_the_chunk() {
+        let (dir, fake, mut engine) = setup(&Settings::default());
+        let out = dir.path().join("out");
+        engine
+            .process_all(
+                &segs(&[("Erster.", None), ("Zweiter.", None)]),
+                &out,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(fake.clone_calls.lock().unwrap().len(), 2);
+        assert_eq!(
+            std::fs::read_to_string(TtsEngine::text_record(&out, 1)).unwrap(),
+            "Zweiter."
+        );
+        // Same text: reused. Changed text under the same number: new audio.
+        engine
+            .process_all(
+                &segs(&[("Erster.", None), ("Anderer.", None)]),
+                &out,
+                None,
+                None,
+            )
+            .unwrap();
+        let calls = fake.clone_calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[2].0, "Anderer.");
     }
 
     #[test]

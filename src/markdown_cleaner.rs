@@ -56,7 +56,15 @@ static FOOTNOTE_MARK: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 static LONE_STAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\*+").unwrap());
-static WORD_UNDERSCORE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_+").unwrap());
+/// "bleu_score" -> "bleu score"; a leading "_low" just loses the underscore.
+static WORD_UNDERSCORE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([\p{L}\p{N}])_+([\p{L}\p{N}])").unwrap());
+static STRAY_UNDERSCORE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_+").unwrap());
+/// Brackets emptied by a removed URL: "API (https://…)" -> "API ()".
+static EMPTY_BRACKETS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s+\(\s*\)|\s+\[\s*\]").unwrap());
+static SPACE_BEFORE_PUNCT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s+([.,;:!?])").unwrap());
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[ \t]{2,}").unwrap());
 
 /// Escaped characters are hidden in a private-use plane while the emphasis
@@ -127,7 +135,11 @@ fn clean_inline(line: &str) -> String {
     let line = restore_escapes(&line);
     let line = FOOTNOTE_MARK.replace_all(&line, "$1$2$3");
     let line = LONE_STAR.replace_all(&line, "");
-    let line = WORD_UNDERSCORE.replace_all(&line, " ");
+    let line = WORD_UNDERSCORE.replace_all(&line, "$1 $2");
+    let line = WORD_UNDERSCORE.replace_all(&line, "$1 $2");
+    let line = STRAY_UNDERSCORE.replace_all(&line, "");
+    let line = EMPTY_BRACKETS.replace_all(&line, "");
+    let line = SPACE_BEFORE_PUNCT.replace_all(&line, "$1");
     SPACES.replace_all(&line, " ").into_owned()
 }
 
@@ -256,6 +268,14 @@ mod tests {
             "Sei F fp(D n) der Filter"
         );
         assert_eq!(clean(r"\* Die übrigen Autoren"), "Die übrigen Autoren");
+        assert_eq!(
+            clean(r"Unterstrich („\_low“, „\_high“)"),
+            "Unterstrich („low“, „high“)"
+        );
+        assert_eq!(
+            clean("nltk.translate.bleu_score"),
+            "nltk.translate.bleu score"
+        );
         assert_eq!(clean(r"MLSum-es\* (Spanisch)"), "MLSum-es (Spanisch)");
     }
 
@@ -286,7 +306,11 @@ mod tests {
             clean("Quelle ist der Common-Crawl-Datensatz unter https://commoncrawl.org."),
             "Quelle ist der Common-Crawl-Datensatz."
         );
-        assert_eq!(clean("Siehe (https://x.org/a), dann"), "Siehe (), dann");
+        assert_eq!(clean("Siehe (https://x.org/a), dann"), "Siehe, dann");
+        assert_eq!(
+            clean("die Transformers-API (https://huggingface.co). Code"),
+            "die Transformers-API. Code"
+        );
     }
 
     #[test]

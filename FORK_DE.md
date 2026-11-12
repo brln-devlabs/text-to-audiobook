@@ -53,8 +53,12 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   „Christopher A. Choquette“, „am 15. September“). Gesprochene Kapitelnamen
   (`VOCALIZE_CHAPTER_NAMES`) nehmen die erste Überschrift der Datei, sonst den Dateinamen in
   seiner Schreibweise. Kapiteltitel, die das LLM erfindet und die nicht im Text stehen
-  (etwa „The Beginning“), werden verworfen. Die Änderungen wirken nach „Clear Cache“ und
-  erneutem „1. Prepare Segments“.
+  (etwa „The Beginning“), werden verworfen.
+- **Geänderter Text wird erkannt:** Ändert sich der vorbereitete Text (neue Programmversion,
+  bearbeitete Eingabe), verwirft Stufe 1 die betroffenen Einträge im Cache, statt sie nach
+  ihrer Nummer weiterzuverwenden; „Clear Cache“ ist dafür nicht mehr nötig. Neben jedem
+  Audiostück liegt `chunk_NNNNNN.txt` mit dem gesprochenen Text. Passt er nicht mehr (anderer
+  Text, andere Prüfentscheidung), erzeugt Stufe 2 das Stück neu.
 - **Unsichere Zahlen prüfen** (`REVIEW_NUMBERS = true`, zusätzlich zu `NORMALIZE_NUMBERS`):
   Stellen, die die Regeln nicht sicher entscheiden können, also Ordnungszahlen ohne
   eindeutiges Wort davor („Sie kam als 3. ins Ziel“, „Er wurde 3.“) und römische Zahlen
