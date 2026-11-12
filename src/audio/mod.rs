@@ -18,6 +18,7 @@
 pub mod assembler;
 pub mod cleanup;
 pub mod filter;
+pub mod loudness;
 pub mod mfcc;
 pub mod tags;
 
