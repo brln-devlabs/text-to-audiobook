@@ -33,6 +33,7 @@ use crate::normalize_de::{
     MONTHS, ROMAN_KEYWORDS, cardinal, ordinal, ordinal_ending, prev_word_raw, prev_words,
     roman_is_label, roman_value,
 };
+use crate::number_en;
 use crate::segment::Segment;
 use crate::tts::resolve_language;
 
@@ -205,6 +206,18 @@ fn roman_choices(v: u64, dot: bool, after_name: bool) -> Vec<Choice> {
         out.push(plain);
         out.extend(regent);
     }
+    // English names and titles ("Henry VIII", "World War II").
+    out.extend([
+        choice(
+            format!("the {}", capitalize(&number_en::ordinal(v))),
+            "englisch nach einem Namen („Henry the Eighth“)",
+        ),
+        choice(
+            format!("{}{}", number_en::cardinal(v), if dot { "." } else { "" }),
+            "englische Grundzahl („World War two“)",
+        ),
+        choice(number_en::ordinal(v), "englische Ordnungszahl („eighth“)"),
+    ]);
     out
 }
 
@@ -902,6 +915,13 @@ mod tests {
         let s = &find_spots("Heinrich IV. war König.")[0];
         assert_eq!(s.choices[0].replacement, "der Vierte");
         assert!(s.choices.iter().any(|c| c.replacement == "des Vierten"));
+        // English readings for names and titles.
+        let s = &find_spots("Henry VIII married six times.")[0];
+        for form in ["the Eighth", "eight", "eighth"] {
+            assert!(s.choices.iter().any(|c| c.replacement == form), "{form}");
+        }
+        let s = &find_spots("Lenin, VIII. Parteitag der KPR(B).")[0];
+        assert!(s.choices.iter().any(|c| c.replacement == "eight."));
         // "Lenin, VIII. Parteitag": all ordinal endings, "achter" included.
         let s = &find_spots("Lenin, VIII. Parteitag der KPR(B).")[0];
         for form in ["achte", "achten", "achter", "achtes"] {
