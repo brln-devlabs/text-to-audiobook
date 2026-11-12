@@ -1734,6 +1734,13 @@ impl LlmNormalizer {
                 });
             if let Some(mut record) = cached {
                 if starts_file {
+                    // Placeholder title of older versions: the file name.
+                    if record.chapter_title.as_deref()
+                        == Some(format!("Chapter {}", record.chapter_number).as_str())
+                    {
+                        record.chapter_title = Some(format_chapter_title(&record.source_file));
+                        storage.save_segment_meta(i, &record.to_value());
+                    }
                     // Chapter and book info start here: take them over.
                     current_chapter_number = record.chapter_number;
                     if let Some(t) = &record.chapter_title {
@@ -1804,7 +1811,8 @@ impl LlmNormalizer {
                             &format!("  chapter title: '{current_chapter_title}'"),
                         );
                     }
-                    None => current_chapter_title = format!("Chapter {current_chapter_number}"),
+                    // No heading and no detected title: the file name.
+                    None => current_chapter_title = format_chapter_title(&source_file),
                 }
             }
 
@@ -2164,7 +2172,8 @@ mod tests {
         assert_eq!(segs[0].story_title.as_deref(), Some("Mein Buch"));
         assert_eq!(segs[0].chapter_title.as_deref(), Some("Der Anfang"));
         assert_eq!(segs[1].chapter_number, 2);
-        assert_eq!(segs[1].chapter_title.as_deref(), Some("Chapter 2"));
+        // No heading: the file name instead of a "Chapter 2" placeholder.
+        assert_eq!(segs[1].chapter_title.as_deref(), Some("02 Ende"));
     }
 
     #[test]
