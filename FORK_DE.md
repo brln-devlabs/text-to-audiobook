@@ -80,6 +80,10 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   über „Review Numbers“ neben der Projektliste öffnen; vor „2. Generate Audio“ fragt das
   Programm nach, wenn noch Stellen offen sind. Ohne Oberfläche: `text-to-audiobook review`.
   Die Entscheidungen liegen in `cache/<Textname>/review.json`; „Clear Cache“ löscht sie mit.
+  Lesbar stehen sie in `output/<Textname>/text/review.txt`: jede unsichere Stelle mit ihrem
+  Satz, der Entscheidung („OFFEN“, „Program default“, „keep as written“ oder die Auswahl) und
+  wie der Ausschnitt gesprochen wird. Die Datei wird beim Vorbereiten, beim Schließen des
+  Prüffensters und nach `text-to-audiobook review` neu geschrieben.
   Sie gelten für neu erzeugte Audiostücke.
 - **Zwei Knöpfe:** „1. Prepare Segments“ bereitet den Text vor und schreibt ihn nach
   `output/<Textname>/text/prepared.txt`, eine Zeile pro Audiostück mit dessen Nummer

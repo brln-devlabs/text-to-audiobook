@@ -545,6 +545,103 @@ pub fn pending(
         .collect()
 }
 
+/// File with all review decisions in context (`output/<project>/text/`).
+pub const REPORT_FILE: &str = "review.txt";
+
+/// The excerpt shown for `it` as it is spoken: every decision of the
+/// segment that lies inside the excerpt applied, then the number rules.
+fn spoken_excerpt(text: &str, it: &Item, store: &ReviewStore) -> String {
+    const DOTS: &str = "…";
+    let lead = it.before.strip_prefix(DOTS);
+    let trail = it.after.strip_suffix(DOTS);
+    let from = it.spot.start - lead.unwrap_or(&it.before).len();
+    let to = it.spot.end + trail.unwrap_or(&it.after).len();
+    let local = ReviewStore {
+        decisions: store
+            .decisions
+            .iter()
+            .filter(|d| {
+                d.segment == it.segment && d.start >= from && d.start + d.original.len() <= to
+            })
+            .map(|d| Decision {
+                start: d.start - from,
+                ..d.clone()
+            })
+            .collect(),
+        path: PathBuf::new(),
+    };
+    let applied = local.apply(it.segment, &text[from..to]);
+    let spoken = crate::normalize_de::unprotect(&crate::normalize_de::normalize(&applied));
+    format!(
+        "{}{spoken}{}",
+        if lead.is_some() { DOTS } else { "" },
+        if trail.is_some() { DOTS } else { "" }
+    )
+}
+
+/// Readable list of every uncertain spot of a project: the sentence around
+/// it, what was decided and how it is spoken.
+pub fn report(
+    project: &str,
+    segments: &[Segment],
+    settings: &Settings,
+    store: &ReviewStore,
+) -> String {
+    let all = items(project, segments, settings);
+    let decided = all
+        .iter()
+        .filter(|it| store.is_decided(it.segment, &it.spot))
+        .count();
+    let mut out = format!(
+        "# Prüfentscheidungen: {project}\n\n{} Stellen, {decided} entschieden, {} offen\n",
+        all.len(),
+        all.len() - decided
+    );
+    for it in &all {
+        let decision = store.get(it.segment, &it.spot);
+        let how = match decision {
+            None => "OFFEN (Program default)".to_string(),
+            Some(d) => match d.replacement.as_deref() {
+                None => "Program default".to_string(),
+                Some(r) if r == it.spot.original => "keep as written".to_string(),
+                Some(r) => format!("„{r}“"),
+            },
+        };
+        let spoken = spoken_excerpt(&segments[it.segment].normalized_text, it, store);
+        out.push_str(&format!(
+            "\n{:06} | {}[{}]{}\n       → {how}\n       gesprochen: {spoken}\n",
+            it.segment, it.before, it.spot.original, it.after
+        ));
+    }
+    // Decisions whose spot is no longer in the text (the text changed).
+    let stale: Vec<&Decision> = store
+        .decisions
+        .iter()
+        .filter(|d| {
+            !all.iter().any(|it| {
+                it.segment == d.segment
+                    && it.spot.start == d.start
+                    && it.spot.original == d.original
+            })
+        })
+        .collect();
+    if !stale.is_empty() {
+        out.push_str(&format!(
+            "\n## {} Entscheidung(en) ohne passende Stelle (Text geändert)\n\n",
+            stale.len()
+        ));
+        for d in stale {
+            out.push_str(&format!(
+                "{:06} | „{}“ → {}\n",
+                d.segment,
+                d.original,
+                d.replacement.as_deref().unwrap_or("Program default")
+            ));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -698,5 +795,68 @@ mod tests {
         assert!(find_spots("Werte: 0,5, 1,25, 13. Danach").is_empty());
         // Without a list in front it is still asked.
         assert!(!find_spots("Sie kam als 3. ins Ziel.").is_empty());
+    }
+
+    #[test]
+    fn report_lists_decisions_in_context() {
+        let settings = Settings {
+            normalize_numbers: true,
+            tts_language: "german".into(),
+            ..Settings::default()
+        };
+        let seg = |t: &str| Segment {
+            normalized_text: t.into(),
+            ..Segment::from_value(serde_json::json!({"normalized_text": t})).unwrap()
+        };
+        let segments = vec![
+            seg("Sie kam als 3. ins Ziel."),
+            seg("2. Die Arbeiter kamen."),
+            seg("Er wurde 5. und ging."),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = ReviewStore::load(dir.path());
+        let s0 = &find_spots(&segments[0].normalized_text)[0];
+        store.set(0, s0, Some("Dritte".into()));
+        let s1 = &find_spots(&segments[1].normalized_text)[0];
+        store.set(1, s1, Some("2.".into()));
+        store.decisions.push(Decision {
+            segment: 7,
+            start: 0,
+            original: "IV.".into(),
+            replacement: None,
+        });
+        let r = report("Buch", &segments, &settings, &store);
+        assert!(r.contains("3 Stellen, 2 entschieden, 1 offen"), "{r}");
+        assert!(r.contains("000000 | Sie kam als [3.] ins Ziel.\n       → „Dritte“\n       gesprochen: Sie kam als Dritte ins Ziel."), "{r}");
+        assert!(r.contains("000001 | [2.] Die Arbeiter kamen.\n       → keep as written\n       gesprochen: 2. Die Arbeiter kamen."), "{r}");
+        assert!(
+            r.contains("000002 | Er wurde [5.] und ging.\n       → OFFEN (Program default)"),
+            "{r}"
+        );
+        assert!(r.contains("000007 | „IV.“ → Program default"), "{r}");
+    }
+
+    #[test]
+    fn report_speaks_all_decisions_in_the_excerpt() {
+        let settings = Settings {
+            normalize_numbers: true,
+            tts_language: "german".into(),
+            ..Settings::default()
+        };
+        let t = "Sie kam als 3. ins Ziel. Er wurde 5. und ging.";
+        let segments =
+            vec![Segment::from_value(serde_json::json!({"normalized_text": t})).unwrap()];
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = ReviewStore::load(dir.path());
+        let spots = find_spots(t);
+        store.set(0, &spots[0], Some("Dritte".into()));
+        store.set(0, &spots[1], Some("Fünfter".into()));
+        let r = report("Buch", &segments, &settings, &store);
+        assert_eq!(
+            r.matches("gesprochen: Sie kam als Dritte ins Ziel. Er wurde Fünfter und ging.")
+                .count(),
+            2,
+            "{r}"
+        );
     }
 }

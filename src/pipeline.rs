@@ -614,8 +614,9 @@ pub const CLEANUP_ROUNDS: usize = 2;
 
 /// Write the prepared text of a project to `<output>/<project>/text/`:
 /// `prepared.txt` (as cleaned and segmented) and, with `NORMALIZE_NUMBERS`,
-/// `spoken.txt` (as it is spoken, review decisions applied). Every line
-/// starts with the number of its audio chunk (`chunk_NNNNNN.wav`).
+/// `spoken.txt` (as it is spoken, review decisions applied) and, with
+/// `REVIEW_NUMBERS`, `review.txt` (every uncertain spot with its decision).
+/// Every line starts with the number of its audio chunk (`chunk_NNNNNN.wav`).
 pub fn write_texts(
     cfg: &Config,
     project_name: &str,
@@ -669,6 +670,16 @@ pub fn write_texts(
         std::fs::write(&spoken, render(true))?;
     } else if spoken.exists() {
         std::fs::remove_file(&spoken)?;
+    }
+    // review.txt: every uncertain spot with its decision, in context.
+    let report = dir.join(crate::review::REPORT_FILE);
+    if cfg.settings.normalize_numbers && cfg.settings.review_numbers {
+        std::fs::write(
+            &report,
+            crate::review::report(project_name, segments, &cfg.settings, &store),
+        )?;
+    } else if report.exists() {
+        std::fs::remove_file(&report)?;
     }
     Ok(prepared)
 }
