@@ -174,6 +174,8 @@ fn roman_choices(v: u64, dot: bool, after_name: bool) -> Vec<Choice> {
     let ordinals = vec![
         choice(ordinal(v, "e"), "Ordnungszahl …-e"),
         choice(ordinal(v, "en"), "Ordnungszahl …-en"),
+        choice(ordinal(v, "er"), "Ordnungszahl …-er (maskulin)"),
+        choice(ordinal(v, "es"), "Ordnungszahl …-es (neutral)"),
     ];
     let mut out = Vec::new();
     if after_name {
@@ -887,6 +889,11 @@ mod tests {
         let s = &find_spots("Heinrich IV. war König.")[0];
         assert_eq!(s.choices[0].replacement, "der Vierte");
         assert!(s.choices.iter().any(|c| c.replacement == "des Vierten"));
+        // "Lenin, VIII. Parteitag": all ordinal endings, "achter" included.
+        let s = &find_spots("Lenin, VIII. Parteitag der KPR(B).")[0];
+        for form in ["achte", "achten", "achter", "achtes"] {
+            assert!(s.choices.iter().any(|c| c.replacement == form), "{form}");
+        }
     }
 
     #[test]
