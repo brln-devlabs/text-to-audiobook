@@ -81,10 +81,14 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   „1. Prepare Segments“ öffnet sich das Fenster „Review Numbers“ und zeigt jede Stelle im
   Satz mit Vorschlägen („dritte“, „dritten“, „Dritter“, „drei.“, „der Vierte“, „des
   Vierten“ …). Ein Klick übernimmt den Vorschlag und springt zur nächsten Stelle; mit
-  „Apply to all identical spots“ gilt die Wahl für alle gleichen Stellen. Die letzte Auswahl
-  („keep as written“) lässt die Stelle genau so, wie sie im Text steht; auch die Regeln
-  ändern sie dann nicht. „Program default“ überlässt die Stelle den Regeln, „Skip“ lässt sie
-  offen. Bei Gliederungspunkten am
+  „Apply to all identical spots“ gilt die Wahl für alle gleichen Stellen. „keep as written“
+  lässt die Stelle genau so, wie sie im Text steht; auch die Regeln ändern sie dann nicht.
+  Die letzte Auswahl (durchgestrichen, „remove from the text“) nimmt die Stelle ganz aus dem
+  gesprochenen Text, samt dem überzähligen Leerzeichen („1. Einleitung“ → „Einleitung“,
+  „Ludwig XIV, der König“ → „Ludwig, der König“); sie fehlt, wenn ohne die Stelle nichts
+  mehr zu sprechen bliebe. Zusammen mit „Apply to all identical spots“ entfernt sie etwa alle
+  Gliederungsnummern auf einmal. „Program default“ überlässt die Stelle den Regeln, „Skip“
+  lässt sie offen. Bei Gliederungspunkten am
   Satzanfang („II. Kapitalistische Revolution“) steht „Zweitens:“ zuerst. Ist der Satz allein
   nicht eindeutig, klappt „▼ More context“ je drei Abschnitte davor und danach auf; bei der
   nächsten Stelle ist die Ansicht wieder zu (Kommandozeile: `m`). Das Fenster lässt sich jederzeit
@@ -92,8 +96,8 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   Programm nach, wenn noch Stellen offen sind. Ohne Oberfläche: `text-to-audiobook review`.
   Die Entscheidungen liegen in `cache/<Textname>/review.json`; „Clear Cache“ löscht sie mit.
   Lesbar stehen sie in `output/<Textname>/text/review.txt`: jede unsichere Stelle mit ihrem
-  Satz, der Entscheidung („OFFEN“, „Program default“, „keep as written“ oder die Auswahl) und
-  wie der Ausschnitt gesprochen wird. Die Datei wird beim Vorbereiten, beim Schließen des
+  Satz, der Entscheidung („OFFEN“, „Program default“, „keep as written“, „remove“ oder die
+  Auswahl) und wie der Ausschnitt gesprochen wird. Die Datei wird beim Vorbereiten, beim Schließen des
   Prüffensters und nach `text-to-audiobook review` neu geschrieben. Jede Entscheidung merkt sich
   ihren Satzausschnitt: Verschieben sich die Abschnittsnummern (anderer Text davor, neue
   Programmversion), wandert sie mit ihrer Stelle mit. Angewendet wird eine Entscheidung nur

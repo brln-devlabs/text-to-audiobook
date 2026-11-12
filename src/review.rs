@@ -204,6 +204,54 @@ fn keep_choice(original: &str) -> Choice {
     }
 }
 
+/// Hint of the choice that takes the spot out of the text.
+pub const REMOVE_HINT: &str = "remove from the text (not spoken)";
+
+/// "Remove" is stored as an empty replacement.
+pub fn is_removal(replacement: &str) -> bool {
+    replacement.is_empty()
+}
+
+fn remove_choice() -> Choice {
+    Choice {
+        replacement: String::new(),
+        hint: REMOVE_HINT.to_string(),
+    }
+}
+
+/// Whether the spot can be removed: something is left to speak without it.
+fn removable(text: &str, start: usize, end: usize) -> bool {
+    text[..start]
+        .chars()
+        .chain(text[end..].chars())
+        .any(char::is_alphanumeric)
+}
+
+/// Byte range taken out of `text` when the spot `start..end` is removed:
+/// the spot plus the spaces after it, or, with none after it, the spaces in
+/// front ("Heinrich IV, der" → "Heinrich, der"), so no double space or
+/// space before punctuation is left. Line breaks stay.
+fn removal_range(text: &str, start: usize, end: usize) -> (usize, usize) {
+    let space = |c: char| c.is_whitespace() && c != '\n' && c != '\r';
+    let tail = &text[end..];
+    let after = tail.len() - tail.trim_start_matches(space).len();
+    if after > 0 {
+        return (start, end + after);
+    }
+    let head = &text[..start];
+    (head.trim_end_matches(space).len(), end)
+}
+
+/// `before`, the replacement, `after`: how the excerpt reads with a choice.
+pub fn with_choice(before: &str, replacement: &str, after: &str, original: &str) -> String {
+    if !is_removal(replacement) {
+        return format!("{before}{replacement}{after}");
+    }
+    let text = format!("{before}{original}{after}");
+    let (from, to) = removal_range(&text, before.len(), before.len() + original.len());
+    format!("{}{}", &text[..from], &text[to..])
+}
+
 /// True if `before` ends with "<number>, " (the spot ends a list of numbers).
 fn after_number_in_list(before: &str) -> bool {
     let Some(rest) = before.trim_end().strip_suffix(',') else {
@@ -333,10 +381,14 @@ pub fn find_spots(text: &str) -> Vec<Spot> {
         });
     }
 
-    // Last choice everywhere: leave the text exactly as written.
+    // Last choices everywhere: leave the text exactly as written, or take
+    // the spot out ("1. Einleitung" → "Einleitung").
     for spot in &mut spots {
         if !spot.choices.iter().any(|c| c.replacement == spot.original) {
             spot.choices.push(keep_choice(&spot.original));
+        }
+        if removable(text, spot.start, spot.end) {
+            spot.choices.push(remove_choice());
         }
     }
 
@@ -503,6 +555,13 @@ impl ReviewStore {
                 continue;
             }
             let rep = d.replacement.as_deref().unwrap_or_default();
+            if is_removal(rep) {
+                // On `out`: the part from `limit` on is already rewritten.
+                let (from, to) = removal_range(&out, d.start, end);
+                out.replace_range(from..to, "");
+                limit = from;
+                continue;
+            }
             // "Keep as written": hidden from the number rules (see
             // `normalize_de::protect`), restored after normalization.
             let rep = if rep == d.original {
@@ -750,6 +809,7 @@ pub fn report(
             Some(d) => match d.replacement.as_deref() {
                 None => "Program default".to_string(),
                 Some(r) if r == it.spot.original => "keep as written".to_string(),
+                Some(r) if is_removal(r) => "remove (not spoken)".to_string(),
                 Some(r) => format!("„{r}“"),
             },
         };
@@ -781,7 +841,11 @@ pub fn report(
                 "{:06} | „{}“ → {}\n",
                 d.segment,
                 d.original,
-                d.replacement.as_deref().unwrap_or("Program default")
+                match d.replacement.as_deref() {
+                    None => "Program default",
+                    Some(r) if is_removal(r) => "remove",
+                    Some(r) => r,
+                }
             ));
         }
     }
@@ -903,9 +967,12 @@ mod tests {
     fn keep_as_written_is_offered_and_survives_normalization() {
         let text = "2. Die Arbeiter kamen.";
         let spots = find_spots(text);
-        let keep = spots[0].choices.last().unwrap();
+        let keep = spots[0]
+            .choices
+            .iter()
+            .find(|c| c.hint == KEEP_HINT)
+            .unwrap();
         assert_eq!(keep.replacement, "2.");
-        assert_eq!(keep.hint, KEEP_HINT);
 
         let dir = tempfile::tempdir().unwrap();
         let mut store = ReviewStore::load(dir.path());
@@ -919,6 +986,92 @@ mod tests {
         let kept =
             crate::normalize_de::unprotect(&crate::normalize_de::normalize(&store.apply(0, text)));
         assert_eq!(kept, text);
+    }
+
+    fn spoken(store: &ReviewStore, text: &str) -> String {
+        crate::normalize_de::unprotect(&crate::normalize_de::normalize(&store.apply(0, text)))
+    }
+
+    #[test]
+    fn remove_is_the_last_choice_and_takes_the_spot_out() {
+        let dir = tempfile::tempdir().unwrap();
+        for (text, expected) in [
+            ("2. Die Arbeiter kamen.", "Die Arbeiter kamen."),
+            (
+                "II. Kapitalistische Revolution: Umwandlung.",
+                "Kapitalistische Revolution: Umwandlung.",
+            ),
+            ("Sie kam als 3. ins Ziel.", "Sie kam als ins Ziel."),
+            ("Heinrich IV. war König.", "Heinrich war König."),
+            (
+                "Damals lebte Ludwig XIV, der König.",
+                "Damals lebte Ludwig, der König.",
+            ),
+            ("Es regierte Ludwig XIV", "Es regierte Ludwig"),
+            ("Sie kam als 3.\nins Ziel.", "Sie kam als\nins Ziel."),
+        ] {
+            let spots = find_spots(text);
+            assert_eq!(spots.len(), 1, "{text}");
+            let remove = spots[0].choices.last().unwrap();
+            assert_eq!(remove.hint, REMOVE_HINT, "{text}");
+            assert!(is_removal(&remove.replacement));
+            let mut store = ReviewStore::load(dir.path());
+            store.set(0, &spots[0], Some(remove.replacement.clone()));
+            assert_eq!(spoken(&store, text), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn remove_is_not_offered_when_nothing_would_be_left() {
+        let spots = find_spots("II.");
+        assert_eq!(spots.len(), 1);
+        assert!(!spots[0].choices.iter().any(|c| is_removal(&c.replacement)));
+    }
+
+    #[test]
+    fn removals_next_to_other_decisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "Heinrich IV. war 3. im Rennen, Ludwig XIV, der König.";
+        let spots = find_spots(text);
+        assert_eq!(originals(text), ["IV.", "3.", "XIV"]);
+        let mut store = ReviewStore::load(dir.path());
+        store.set(0, &spots[0], Some(String::new()));
+        store.set(0, &spots[1], Some("Dritter".into()));
+        store.set(0, &spots[2], Some(String::new()));
+        assert_eq!(
+            spoken(&store, text),
+            "Heinrich war Dritter im Rennen, Ludwig, der König."
+        );
+    }
+
+    #[test]
+    fn preview_with_removal() {
+        assert_eq!(
+            with_choice("Sie kam als ", "", " ins Ziel.", "3."),
+            "Sie kam als ins Ziel."
+        );
+        assert_eq!(
+            with_choice("", "", " Die Arbeiter …", "2."),
+            "Die Arbeiter …"
+        );
+        assert_eq!(
+            with_choice("Sie kam als ", "Dritte", " ins Ziel.", "3."),
+            "Sie kam als Dritte ins Ziel."
+        );
+    }
+
+    #[test]
+    fn report_shows_removals() {
+        let segments = segs(&["Sie kam als 3. ins Ziel."]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = ReviewStore::load(dir.path());
+        let spot = &find_spots(&segments[0].normalized_text)[0];
+        store.set(0, spot, Some(String::new()));
+        let r = report("Buch", &segments, &german(), &store);
+        assert!(
+            r.contains("→ remove (not spoken)\n       gesprochen: Sie kam als ins Ziel."),
+            "{r}"
+        );
     }
 
     #[test]

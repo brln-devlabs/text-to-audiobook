@@ -12,7 +12,7 @@ An open-source text-to-speech application that turns Markdown texts into audiobo
 
 - 🎤 **Qwen3-TTS voice cloning** on [Candle](https://github.com/huggingface/candle) (CPU, CUDA or Metal), consistent narrator via voice anchoring
 - 🔢 **Number normalization** for German (optional): numbers, years, dates, ordinals, times, money, units, Roman numerals after "Kapitel"/"Teil"/… and abbreviations are spelled out before synthesis
-- ✅ **Guided number review** (optional): spots the rules cannot decide (ordinals without clear context, Roman numerals like "Heinrich IV.") are listed with suggested readings to click through
+- ✅ **Guided number review** (optional): spots the rules cannot decide (ordinals without clear context, Roman numerals like "Heinrich IV.") are listed with suggested readings to click through; a spot can also be kept as written or removed from the spoken text
 - 🧠 **Optional LLM** (Llama 3.2 1B through [llama.cpp](https://github.com/ggml-org/llama.cpp)): emotion spans, language, chapter and story titles, reading order of chapter files. Without it, titles come from headings and the reading order from file names
 - 🎨 **Desktop GUI** (egui) with project list, progress/ETA and live log, plus a **CLI** for headless use and Docker
 - ⚡ **Audio pipeline**: Butterworth clean-up filters, crossfades, sentence/paragraph pauses, WAV + MP3 export (LAME built in, no ffmpeg needed)
