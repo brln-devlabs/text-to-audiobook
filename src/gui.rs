@@ -45,8 +45,6 @@ const GREEN: Color32 = Color32::from_rgb(0x2a, 0x6a, 0x2a);
 
 /// App icon for the window, task bar and Dock (rendered from `assets/icon.svg`).
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon-256.png");
-/// The same icon, small, for the title row.
-const LOGO_PNG: &[u8] = include_bytes!("../assets/icon-64.png");
 /// Window app ID (Wayland) / WM_CLASS (X11). Linux desktops take the icon
 /// from the `.desktop` file of the same name (see `desktop_entry`).
 pub const APP_ID: &str = "text-to-audiobook";
@@ -75,17 +73,6 @@ pub fn launch(cfg: Config, input_dir: PathBuf, output_dir: PathBuf) -> Result<()
         Box::new(move |cc| Ok(Box::new(App::new(cc, cfg, input_dir, output_dir)))),
     )
     .map_err(|e| anyhow::anyhow!("GUI failed: {e}"))
-}
-
-fn load_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
-    let icon = eframe::icon_data::from_png_bytes(LOGO_PNG)
-        .inspect_err(|e| log::warn!("logo not loaded: {e}"))
-        .ok()?;
-    let image = egui::ColorImage::from_rgba_unmultiplied(
-        [icon.width as usize, icon.height as usize],
-        &icon.rgba,
-    );
-    Some(ctx.load_texture("app-logo", image, egui::TextureOptions::LINEAR))
 }
 
 /// Results that worker threads hand back to the UI thread.
@@ -535,8 +522,6 @@ impl VoiceForm {
 }
 
 pub struct App {
-    /// App icon shown next to the title (None if the PNG could not be read).
-    logo: Option<egui::TextureHandle>,
     review: Option<ReviewSession>,
     download: Option<DownloadDialog>,
     /// Stage 2 was requested while spots are open: number of open spots.
@@ -578,9 +563,7 @@ impl App {
             let _ = tx.send(line);
             repaint.request_repaint();
         });
-        let logo = load_logo(&ctx);
         let mut app = Self {
-            logo,
             review: None,
             download: None,
             stage2_guard: None,
@@ -1391,37 +1374,15 @@ impl App {
         }
     }
 
-    /// Title row: icon and heading, centred together.
-    fn title_ui(&self, ui: &mut egui::Ui) {
-        const LOGO_SIZE: f32 = 32.0;
-        let title = egui::WidgetText::from(
-            RichText::new("AI Text-to-Speech Pipeline")
-                .size(18.0)
-                .strong(),
-        )
-        .into_galley(
-            ui,
-            Some(egui::TextWrapMode::Extend),
-            f32::INFINITY,
-            egui::TextStyle::Body,
-        );
-        let logo_width = match self.logo {
-            Some(_) => LOGO_SIZE + ui.spacing().item_spacing.x,
-            None => 0.0,
-        };
-        ui.horizontal(|ui| {
-            let indent = (ui.available_width() - logo_width - title.size().x) / 2.0;
-            ui.add_space(indent.max(0.0));
-            if let Some(logo) = &self.logo {
-                ui.add(egui::Image::new(logo).fit_to_exact_size(egui::vec2(LOGO_SIZE, LOGO_SIZE)));
-            }
-            ui.label(title);
-        });
-    }
-
     fn top_ui(&mut self, ui: &mut egui::Ui) {
         let busy = self.busy();
-        self.title_ui(ui);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new("AI Text-to-Speech Pipeline")
+                    .size(18.0)
+                    .strong(),
+            );
+        });
         ui.add_space(4.0);
         for (label, is_input) in [("Input Directory:", true), ("Output Directory:", false)] {
             egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -2350,12 +2311,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_icons_decode() {
-        for (png, size) in [(ICON_PNG, 256), (LOGO_PNG, 64)] {
-            let icon = eframe::icon_data::from_png_bytes(png).unwrap();
-            assert_eq!((icon.width, icon.height), (size, size));
-            assert_eq!(icon.rgba.len(), (size * size * 4) as usize);
-        }
+    fn bundled_icon_decodes() {
+        let icon = eframe::icon_data::from_png_bytes(ICON_PNG).unwrap();
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
     }
 
     #[test]
