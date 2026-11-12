@@ -205,8 +205,8 @@ Every subfolder of `input/` is one project (book), every loose `.md` file is a p
 output/
 └── <project>/
     ├── final/
-    │   ├── audiobook.mp3          # final audio (or chapter_01.mp3, ...)
-    │   ├── audiobook.wav          # WAV mirror
+    │   ├── <name>.mp3             # final audio, named like the input file
+    │   ├── <name>.wav             # WAV mirror
     │   └── audiobook_preview.mp3  # provisional audiobook, only while Stage 2 is unfinished
     ├── text/
     │   ├── prepared.txt           # prepared text, one line per chunk ("000012 | ...")
@@ -217,6 +217,8 @@ output/
         ├── chunk_000001_1.wav
         └── ...
 ```
+
+The final file is named like the input file: `Probe.md` gives `final/Probe.mp3`. A project folder with several files merged into one gives `<project>.mp3`; with `CHAPTER_BY_CHAPTER` every source file gets its own MP3 under its own name (`01_Anfang.md` → `01_Anfang.mp3`), so players sort the chapters correctly only when the file names do.
 
 ## Configuration
 
@@ -243,7 +245,7 @@ Edit `settings.json` in the project root or use the settings window. Keys and de
 | `LLM_GPU_LAYERS` | 0 | Llama layers on the GPU (0 = CPU, -1 = all) |
 | `LLM_MAX_RETRIES` | 3 | attempts per LLM call |
 | `STORAGE_BACKEND` | `json` | `json` or `sqlite` |
-| `CHAPTER_BY_CHAPTER` | false | one MP3 per source file |
+| `CHAPTER_BY_CHAPTER` | false | one MP3 per source file, named like it |
 | `VOCALIZE_CHAPTER_NAMES` | false | speak the chapter name (first heading, else the file name) first |
 | `SPEAK_HEADINGS` | true | speak every heading after a file's first one as a paragraph of its own (the first one is the chapter name) |
 | `LOG_LEVEL_CONSOLE` / `LOG_LEVEL_FILE` | `INFO` / `DEBUG` | log levels |
