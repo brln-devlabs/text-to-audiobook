@@ -16,6 +16,7 @@ An open-source text-to-speech application that turns Markdown texts into audiobo
 - 🧠 **Optional LLM** (Llama 3.2 1B through [llama.cpp](https://github.com/ggml-org/llama.cpp)): emotion spans, language, chapter and story titles, reading order of chapter files. Without it, titles come from headings and the reading order from file names
 - 🎨 **Desktop GUI** (egui) with project list, progress/ETA and live log, plus a **CLI** for headless use and Docker
 - ⚡ **Audio pipeline**: Butterworth clean-up filters, crossfades, sentence/paragraph pauses, WAV + MP3 export (LAME built in, no ffmpeg needed)
+- 🎧 **Provisional audiobook**: while Stage 2 runs, `final/audiobook_preview.mp3` is rebuilt in the background after every chunk, so the book can be heard before it is finished
 - 🔍 **Quality audit** of generated chunks (speech ratio, loudness, clipping, MFCC voice match) with automatic regeneration
 - 💾 **SQLite or JSON** cache; interrupted runs resume where they stopped
 - 📊 **Tests without models**: mock backends cover the whole pipeline (`cargo test`)
@@ -121,7 +122,7 @@ text-to-audiobook
 Select the input and output directories, tick the stories and run the stages (the ticks are remembered in `cache/project_selection.json`; newly added stories start ticked):
 
 1. **Prepare Segments** – clean, chunk and analyse the texts (cached); the result is written to `output/<project>/text/`
-2. **Generate Audio** – synthesize every segment, optionally audit and regenerate failed chunks (`AUTO_CLEANUP`), denoise, assemble
+2. **Generate Audio** – synthesize every segment, optionally audit and regenerate failed chunks (`AUTO_CLEANUP`), denoise, assemble. Meanwhile `final/audiobook_preview.mp3` always holds every chunk done so far (see [Provisional audiobook](#provisional-audiobook))
 
 The audit and the assembly without TTS remain available on the command line (`cleanup`, `assemble`).
 
@@ -162,7 +163,8 @@ output/
 └── <project>/
     ├── final/
     │   ├── audiobook.mp3          # final audio (or chapter_01.mp3, ...)
-    │   └── audiobook.wav          # WAV mirror
+    │   ├── audiobook.wav          # WAV mirror
+    │   └── audiobook_preview.mp3  # provisional audiobook, only while Stage 2 is unfinished
     ├── text/
     │   ├── prepared.txt           # prepared text, one line per chunk ("000012 | ...")
     │   └── spoken.txt             # as spoken (with NORMALIZE_NUMBERS and review decisions)
@@ -231,6 +233,7 @@ cargo clippy --all-targets
 | `tts` | Qwen3-TTS via Candle (`qwen_tts`), voice anchoring, sub-parts, ID3 tags |
 | `audio` | WAV I/O, Butterworth filters, assembler (WAV + MP3), quality audit, MFCC |
 | `pipeline` | stages 1–4, project discovery, chapter assembly |
+| `preview` | provisional audiobook while Stage 2 runs (background thread) |
 | `gui`, `main` | egui desktop app and CLI |
 | `desktop_entry` | Linux: desktop entry and icon, so GNOME/KDE show the app icon |
 
@@ -248,6 +251,11 @@ With `USE_LLM = true`, **Llama-3.2-1B-Instruct** (4-bit GGUF) additionally order
 4. Every later chunk clones the anchor (x-vector voice cloning), same seed each time
 5. Denoise each chunk (high-pass 60 Hz, low-pass 9 kHz)
 6. Join with crossfades and pauses, export WAV + MP3
+
+### Provisional audiobook
+After every newly spoken chunk a second thread rebuilds `final/audiobook_preview.mp3` from all chunks done so far, while the TTS goes on with the next chunk. It is mixed like the final file (denoise filters applied in memory, crossfades, pauses, loudness) but always as one file, also with `CHAPTER_BY_CHAPTER`, and without a WAV mirror. One build runs at a time; chunks that finish during a build go into the next one, so on long books the preview may lag a few chunks behind, but it never holds up the synthesis (a build of a 1-hour book takes about half a minute on one CPU core). The file is written under `audiobook_preview.mp3.part` and then renamed, so a player never gets a half-written file; on Windows a player that keeps the file open can block the update (one warning in the log, the next chunk tries again).
+
+When Stage 2 is stopped (Stop) or fails, the preview is brought up to date with every chunk done; Force Stop leaves it as it is. Chunks that are only reused trigger no rebuild. Once the final files are assembled (Stage 2 or `assemble`), the preview is deleted.
 
 ### Voice Anchoring
 The narrator voice is locked after the first chunk. Every following chunk uses that audio as voice reference, which keeps the speaker identity stable across the whole book. For your own narrator, choose a 10–15 s recording in the Voice panel (`VOICE_SOURCE = "file"`, see [FORK_DE.md](FORK_DE.md)).
