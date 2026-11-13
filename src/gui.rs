@@ -148,6 +148,17 @@ struct ProjectRow {
     selected: bool,
 }
 
+/// The "Create" dialog: a new story typed in, saved as `<name>.md` in the
+/// input directory.
+#[derive(Default)]
+struct CreateForm {
+    name: String,
+    text: String,
+    error: Option<String>,
+    /// Put the cursor into the name field (first frame only).
+    focus_name: bool,
+}
+
 /// One editable settings row.
 struct Field {
     key: &'static str,
@@ -537,6 +548,7 @@ pub struct App {
     voice: VoiceForm,
     quick: QuickConfig,
     settings_form: Option<SettingsForm>,
+    create_form: Option<CreateForm>,
     confirm_close: bool,
     allow_close: bool,
     shared: Arc<Shared>,
@@ -577,6 +589,7 @@ impl App {
             projects: Vec::new(),
             segments: IndexMap::new(),
             settings_form: None,
+            create_form: None,
             confirm_close: false,
             allow_close: false,
             shared: Arc::new(Shared::default()),
@@ -1466,6 +1479,19 @@ impl App {
             if ui.button("Refresh").clicked() {
                 self.refresh_project_list();
             }
+            if ui
+                .button("Create")
+                .on_hover_text(
+                    "Type in a new story; it is saved as Markdown in the input directory",
+                )
+                .clicked()
+                && self.create_form.is_none()
+            {
+                self.create_form = Some(CreateForm {
+                    focus_name: true,
+                    ..CreateForm::default()
+                });
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add_enabled(!busy, egui::Button::new("Fix Languages").fill(GREEN))
@@ -1492,11 +1518,12 @@ impl App {
                         ui.label(
                             RichText::new(
                                 "(no projects found in this directory)\n\n\
-                                 Put your texts as Markdown (.md) files into the input \
-                                 directory: one file per book, or one folder per book \
-                                 with a file per chapter. \"Open\" next to \"Input \
-                                 Directory\" shows the folder, \"Refresh\" reloads the \
-                                 list.",
+                                 Put your texts as Markdown (.md) or plain text (.txt) \
+                                 files into the input directory: one file per book, or \
+                                 one folder per book with a file per chapter. \"Open\" \
+                                 next to \"Input Directory\" shows the folder, \
+                                 \"Refresh\" reloads the list, \"Create\" lets you type \
+                                 in a new story.",
                             )
                             .color(Color32::GRAY),
                         );
@@ -1840,6 +1867,96 @@ impl App {
             Some("reset") => self.reset_settings_to_defaults(),
             Some(_) => self.settings_form = None,
             None if !open => self.settings_form = None,
+            None => {}
+        }
+    }
+
+    fn create_window(&mut self, ctx: &egui::Context) {
+        let Some(form) = self.create_form.as_mut() else {
+            return;
+        };
+        let mut open = true;
+        let mut action: Option<&str> = None;
+        let target = match pipeline::story_name(&form.name) {
+            Ok(name) => format!(
+                "Saved as {}",
+                self.input_dir.join(format!("{name}.md")).display()
+            ),
+            Err(_) => format!(
+                "Saved as {}",
+                self.input_dir.join("<file name>.md").display()
+            ),
+        };
+        egui::Window::new("Create Story")
+            .open(&mut open)
+            .collapsible(false)
+            .default_size([560.0, 460.0])
+            .show(ctx, |ui| {
+                ui.label("File name");
+                let name = ui.add(
+                    egui::TextEdit::singleline(&mut form.name)
+                        .hint_text("e.g. Kapitel 1")
+                        .desired_width(f32::INFINITY),
+                );
+                if std::mem::take(&mut form.focus_name) {
+                    name.request_focus();
+                }
+                let mut edited = name.changed();
+                ui.label(RichText::new(target).small().color(Color32::GRAY));
+                ui.add_space(6.0);
+                ui.label("Text");
+                egui::ScrollArea::vertical()
+                    .id_salt("create_text")
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        edited |= ui
+                            .add(
+                                egui::TextEdit::multiline(&mut form.text)
+                                    .hint_text(
+                                        "The story; Markdown works (# Heading, blank line \
+                                         between paragraphs)",
+                                    )
+                                    .desired_rows(14)
+                                    .desired_width(f32::INFINITY),
+                            )
+                            .changed();
+                    });
+                if edited {
+                    form.error = None;
+                }
+                if let Some(err) = &form.error {
+                    ui.label(RichText::new(err).color(Color32::from_rgb(0xe0, 0x60, 0x60)));
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let ready = !form.name.trim().is_empty() && !form.text.trim().is_empty();
+                    if ui
+                        .add_enabled(ready, egui::Button::new("Create").fill(GREEN))
+                        .clicked()
+                    {
+                        action = Some("create");
+                    }
+                    if ui
+                        .add(egui::Button::new("Cancel").fill(Color32::from_gray(0x66)))
+                        .clicked()
+                    {
+                        action = Some("cancel");
+                    }
+                });
+            });
+        match action {
+            Some("create") => {
+                match pipeline::create_story(&self.input_dir, &form.name, &form.text) {
+                    Ok(path) => {
+                        log::info!("Created story {}", path.display());
+                        self.create_form = None;
+                        self.refresh_project_list();
+                    }
+                    Err(e) => form.error = Some(format!("{e:#}")),
+                }
+            }
+            Some(_) => self.create_form = None,
+            None if !open => self.create_form = None,
             None => {}
         }
     }
@@ -2354,6 +2471,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| self.projects_ui(ui));
 
         self.settings_window(&ctx);
+        self.create_window(&ctx);
         self.review_window(&ctx);
         self.stage2_guard_dialog(&ctx);
         self.download_dialog(&ctx);

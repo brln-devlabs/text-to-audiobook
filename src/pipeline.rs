@@ -21,7 +21,7 @@
 //! 4. assemble final audio from existing chunks
 //!
 //! Every subfolder of the input directory is one project (book), every
-//! loose `.md` file is a project of its own.
+//! loose text file (`.md` or `.txt`) is a project of its own.
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -163,7 +163,47 @@ fn file_stem(p: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// All `.md` files below `dir` (recursive).
+/// Extensions of the text files the pipeline reads (any case): Markdown and
+/// plain text. Plain text is valid Markdown, so both are cleaned alike.
+const TEXT_EXTENSIONS: [&str; 2] = ["md", "txt"];
+
+fn is_text_file(p: &Path) -> bool {
+    p.is_file()
+        && p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| TEXT_EXTENSIONS.iter().any(|t| e.eq_ignore_ascii_case(t)))
+}
+
+fn is_markdown(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+}
+
+/// The text files among `entries` (one folder). A `.txt` next to a `.md` of
+/// the same name (in any case) is left out: both would be the same chapter
+/// or project.
+fn text_files_in(entries: &[PathBuf]) -> Vec<PathBuf> {
+    let files: Vec<&PathBuf> = entries.iter().filter(|p| is_text_file(p)).collect();
+    let stem = |p: &Path| file_stem(p).to_lowercase();
+    files
+        .iter()
+        .filter(|p| {
+            let twin =
+                !is_markdown(p) && files.iter().any(|o| is_markdown(o) && stem(o) == stem(p));
+            if twin {
+                log::warn!(
+                    "Ignoring {}: a .md file of the same name is used",
+                    p.display()
+                );
+            }
+            !twin
+        })
+        .map(|p| (*p).clone())
+        .collect()
+}
+
+/// All text files (`.md`, `.txt`) below `dir` (recursive).
 fn md_files_recursive(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -173,19 +213,14 @@ fn md_files_recursive(dir: &Path) -> Vec<PathBuf> {
         };
         let mut entries: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
         entries.sort();
-        for p in entries {
-            if p.is_dir() {
-                stack.push(p);
-            } else if p.extension().is_some_and(|e| e == "md") {
-                out.push(p);
-            }
-        }
+        out.extend(text_files_in(&entries));
+        stack.extend(entries.into_iter().filter(|p| p.is_dir()));
     }
     out
 }
 
-/// Each subfolder of `input_dir` with `.md` files is one project; each loose
-/// `.md` file is its own project.
+/// Each subfolder of `input_dir` with text files is one project; each loose
+/// text file (`.md`, `.txt`) is its own project.
 pub fn discover_projects(input_dir: &Path) -> Vec<Project> {
     let mut projects = Vec::new();
     let Ok(entries) = std::fs::read_dir(input_dir) else {
@@ -203,17 +238,85 @@ pub fn discover_projects(input_dir: &Path) -> Vec<Project> {
             });
         }
     }
-    for f in entries
-        .iter()
-        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "md"))
-    {
+    for f in text_files_in(&entries) {
         projects.push(Project {
-            name: file_stem(f),
-            files: vec![f.clone()],
+            name: file_stem(&f),
+            files: vec![f],
             input_dir: input_dir.to_path_buf(),
         });
     }
     projects
+}
+
+/// Name of a story typed in the GUI; it is saved as `<name>.md`. A typed
+/// `.md` or `.txt` ending is dropped; names a file system would refuse (or
+/// that Windows reserves) are errors.
+pub fn story_name(typed: &str) -> Result<String> {
+    let mut name = typed.trim();
+    if let Some((stem, ext)) = name.rsplit_once('.')
+        && TEXT_EXTENSIONS.iter().any(|t| ext.eq_ignore_ascii_case(t))
+    {
+        name = stem.trim_end();
+    }
+    if name.is_empty() {
+        anyhow::bail!("Please enter a file name.");
+    }
+    if let Some(c) = name
+        .chars()
+        .find(|c| c.is_control() || r#"<>:"/\|?*"#.contains(*c))
+    {
+        anyhow::bail!("The file name must not contain '{c}'.");
+    }
+    if name.starts_with('.') || name.ends_with('.') {
+        anyhow::bail!("The file name must not start or end with a dot.");
+    }
+    let base = name.split('.').next().unwrap_or(name).trim_end();
+    let base = base.to_ascii_uppercase();
+    let reserved = matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (base.len() == 4
+            && (base.starts_with("COM") || base.starts_with("LPT"))
+            && matches!(base.as_bytes()[3], b'1'..=b'9'));
+    if reserved {
+        anyhow::bail!("\"{name}\" is a reserved name on Windows.");
+    }
+    Ok(name.to_string())
+}
+
+/// Save `text` as a new Markdown story `<name>.md` in `input_dir` (see
+/// [`story_name`]). An existing story of that name is never replaced.
+pub fn create_story(input_dir: &Path, typed_name: &str, text: &str) -> Result<PathBuf> {
+    let name = story_name(typed_name)?;
+    if text.trim().is_empty() {
+        anyhow::bail!("Please enter the text of the story.");
+    }
+    // Case-insensitive: on Windows and macOS "story" and "Story" are one file.
+    let taken = |other: &str| other.to_lowercase() == name.to_lowercase();
+    let folder_taken = std::fs::read_dir(input_dir).is_ok_and(|entries| {
+        entries
+            .filter_map(|e| e.ok())
+            .any(|e| e.path().is_dir() && taken(&e.file_name().to_string_lossy()))
+    });
+    if folder_taken || discover_projects(input_dir).iter().any(|p| taken(&p.name)) {
+        anyhow::bail!("A story named \"{name}\" already exists.");
+    }
+    std::fs::create_dir_all(input_dir)?;
+    let path = input_dir.join(format!("{name}.md"));
+    let mut content = text.to_string();
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, content.as_bytes()));
+    match written {
+        Ok(()) => Ok(path),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::bail!("A file named \"{name}.md\" already exists.")
+        }
+        Err(e) => anyhow::bail!("Could not write {}: {e}", path.display()),
+    }
 }
 
 /// Valid TTS-ready segments of a (complete or partial) stage-1 cache.
@@ -242,14 +345,43 @@ pub fn load_cached_segments(cache_dir: &Path, storage_backend: &str) -> Vec<Segm
 
 static NUMERIC_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d").unwrap());
 
+/// Windows-1252 characters for the bytes 0x80..0x9F (the rest is Latin-1);
+/// unused bytes become U+FFFD.
+const CP1252_HIGH: [char; 32] = [
+    '€', '\u{FFFD}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{FFFD}', 'Ž',
+    '\u{FFFD}', '\u{FFFD}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{FFFD}',
+    'ž', 'Ÿ',
+];
+
+/// Text of an input file. UTF-8 (a BOM is dropped); anything else is read as
+/// Windows-1252, the "ANSI" encoding older Windows editors save `.txt` in.
+fn read_text(path: &Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return Ok(s.to_string());
+    }
+    log::info!(
+        "{} is not UTF-8, reading it as Windows-1252",
+        path.display()
+    );
+    Ok(bytes
+        .iter()
+        .map(|&b| match b {
+            0x80..=0x9F => CP1252_HIGH[(b - 0x80) as usize],
+            _ => b as char,
+        })
+        .collect())
+}
+
 /// Read up to `n` characters from the start of a file.
 fn read_head(path: &Path, n: usize) -> String {
-    std::fs::read(path)
-        .map(|b| pyval::prefix(&String::from_utf8_lossy(&b), n).to_string())
+    read_text(path)
+        .map(|t| pyval::prefix(&t, n).to_string())
         .unwrap_or_default()
 }
 
-/// Narrative reading order of the `.md` files of a project.
+/// Narrative reading order of the text files of a project.
 ///
 /// If every name starts with a digit, natural sort decides (the 1B LLM cannot
 /// collate numbers reliably). Otherwise the LLM sees content previews and
@@ -382,8 +514,7 @@ fn build_chunks(
     emit(progress, "Cleaning and chunking text...");
     let mut chunks = Vec::new();
     for (n, f) in md_files.iter().enumerate() {
-        let raw = std::fs::read_to_string(f)
-            .map_err(|e| anyhow::anyhow!("reading {}: {e}", f.display()))?;
+        let raw = read_text(f).map_err(|e| anyhow::anyhow!("reading {}: {e}", f.display()))?;
         // The first heading is the chapter name (VOCALIZE_CHAPTER_NAMES);
         // further headings are paragraphs of their own (SPEAK_HEADINGS).
         let cleaned = clean_with(&raw, settings.speak_headings);
@@ -511,7 +642,7 @@ pub fn prepare_segments(
     if projects.is_empty() {
         emit(
             progress,
-            "No projects found (no folders with .md files and no loose .md files)",
+            "No projects found (no folders with .md/.txt files and no loose .md/.txt files)",
         );
         return Ok(IndexMap::new());
     }
@@ -1425,7 +1556,7 @@ mod tests {
         std::fs::write(input.join("Book/part/02.md"), "B.").unwrap();
         std::fs::create_dir_all(input.join("Empty")).unwrap();
         std::fs::write(input.join("story.md"), "C.").unwrap();
-        std::fs::write(input.join("notes.txt"), "x").unwrap();
+        std::fs::write(input.join("notes.json"), "{}").unwrap();
         let p = discover_projects(input);
         assert_eq!(p.len(), 2);
         assert_eq!(p[0].name, "Book");
@@ -1433,6 +1564,74 @@ mod tests {
         assert_eq!(p[1].name, "story");
         assert_eq!(p[1].input_dir, input);
         assert!(discover_projects(&input.join("missing")).is_empty());
+    }
+
+    #[test]
+    fn txt_files_are_projects_and_chapters_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path();
+        std::fs::create_dir_all(input.join("Book")).unwrap();
+        std::fs::write(input.join("Book/01.md"), "A.").unwrap();
+        std::fs::write(input.join("Book/02.txt"), "B.").unwrap();
+        std::fs::write(input.join("Notiz.TXT"), "C.").unwrap();
+        // The .md wins over a .txt of the same name.
+        std::fs::write(input.join("story.md"), "D.").unwrap();
+        std::fs::write(input.join("Story.txt"), "E.").unwrap();
+        let p = discover_projects(input);
+        let names: Vec<&str> = p.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Book", "Notiz", "story"]);
+        let book: Vec<String> = p[0].files.iter().map(|f| file_name(f)).collect();
+        assert_eq!(book, ["01.md", "02.txt"]);
+        assert_eq!(p[2].files, [input.join("story.md")]);
+    }
+
+    #[test]
+    fn text_is_read_as_utf8_or_windows_1252() {
+        let dir = tempfile::tempdir().unwrap();
+        let utf8 = dir.path().join("utf8.txt");
+        std::fs::write(&utf8, "\u{FEFF}# Größe\n„Text“ – 5 €").unwrap();
+        assert_eq!(read_text(&utf8).unwrap(), "# Größe\n„Text“ – 5 €");
+        // "Größe „Text“ – 5 €" saved by an old Windows editor ("ANSI").
+        let ansi = dir.path().join("ansi.txt");
+        std::fs::write(&ansi, b"Gr\xF6\xDFe \x84Text\x93 \x96 5 \x80").unwrap();
+        assert_eq!(read_text(&ansi).unwrap(), "Größe „Text“ – 5 €");
+    }
+
+    #[test]
+    fn story_names_are_checked() {
+        assert_eq!(story_name("  Kapitel 1 ").unwrap(), "Kapitel 1");
+        assert_eq!(story_name("Probe.md").unwrap(), "Probe");
+        assert_eq!(story_name("Probe.TXT").unwrap(), "Probe");
+        assert_eq!(story_name("Teil 1.2").unwrap(), "Teil 1.2");
+        assert_eq!(story_name("Märchen").unwrap(), "Märchen");
+        assert_eq!(story_name("Comet").unwrap(), "Comet");
+        for bad in [
+            "", "  ", ".md", "a/b", "a\\b", "Wer?", "a:b", ".hidden", "Ende.", "CON", "com1",
+            "Lpt9.x",
+        ] {
+            assert!(story_name(bad).is_err(), "{bad:?} accepted");
+        }
+    }
+
+    #[test]
+    fn create_story_writes_markdown_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input");
+        let path = create_story(&input, "Neue Geschichte.md", "Es war einmal.").unwrap();
+        assert_eq!(path, input.join("Neue Geschichte.md"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "Es war einmal.\n");
+        let p = discover_projects(&input);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].name, "Neue Geschichte");
+        // Never replaced, whatever the case or text extension.
+        assert!(create_story(&input, "neue geschichte", "Anders.").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "Es war einmal.\n");
+        std::fs::write(input.join("Alt.txt"), "Text.").unwrap();
+        assert!(create_story(&input, "Alt", "Neu.").is_err());
+        std::fs::create_dir_all(input.join("Buch")).unwrap();
+        assert!(create_story(&input, "Buch", "Neu.").is_err());
+        assert!(create_story(&input, "Leer", " \n ").is_err());
+        assert!(!input.join("Leer.md").exists());
     }
 
     #[test]

@@ -160,6 +160,15 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   „2. Generate Audio“ baut die Datei also schnell neu zusammen.
 - **Neutrale Erzählstimme** im `NARRATOR_PROMPT` und deutscher Text für die automatisch
   erzeugte Referenzstimme.
+- **Texte als `.md` oder `.txt`:** Neben Markdown-Dateien nimmt das Programm auch einfache
+  Textdateien (`.txt`), als eigenes Projekt oder als Kapitel in einem Projektordner. Sie
+  werden wie Markdown gelesen; ist eine Datei nicht UTF-8, wird sie als Windows-1252
+  („ANSI“, ältere Windows-Editoren) gelesen. Liegt neben `Probe.txt` auch `Probe.md`, zählt
+  nur die `.md`.
+- **Neue Geschichte in der Oberfläche anlegen:** „Create“ neben „Refresh“ öffnet ein Fenster
+  mit Dateiname und Text. „Create“ speichert den Text als `<Dateiname>.md` im Eingabeordner,
+  und die Geschichte erscheint sofort (angehakt) in der Liste. Eine vorhandene Geschichte
+  gleichen Namens wird nie überschrieben.
 - **Projektauswahl bleibt erhalten:** welche Texte in der Liste angehakt sind, merkt sich
   die Oberfläche in `cache/project_selection.json`, auch über einen Neustart hinweg. Neu
   hinzugekommene Texte sind angehakt.
@@ -188,7 +197,7 @@ Beim ersten Start fragt das Programm, ob es das Sprachmodell herunterladen soll 
 mehrere GB, mit Fortschrittsanzeige). Ein abgebrochener Download geht beim nächsten Mal dort
 weiter, wo er stehen geblieben ist. Texte, Hörbücher und Einstellungen liegen in
 `Dokumente/text-to-audiobook`; „Open“ neben „Input Directory“ öffnet den Ordner, in den die
-Texte (`.md`) kommen.
+Texte (`.md` oder `.txt`) kommen. Mit „Create“ lässt sich ein Text auch direkt eintippen.
 
 ### Mit NVIDIA-Grafikkarte: die CUDA-Pakete
 
