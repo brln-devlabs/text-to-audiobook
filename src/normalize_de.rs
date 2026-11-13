@@ -194,8 +194,9 @@ fn parse_number(s: &str) -> Option<(u64, Option<String>)> {
 static THOUSANDS: LazyLock<Regex> = LazyLock::new(|| re(r"^\d{1,3}(?:\.\d{3})+(?:,\d+)?$"));
 
 /// Number token in words: cardinal, decimal ("drei Komma eins vier"),
-/// leading zeros digit by digit. A decimal point ("0.75") is read like a
-/// decimal comma; "3.500" with groups of three is a thousands separator.
+/// leading zeros digit by digit. A point between digits is read as
+/// "Punkt" ("5.1" -> "fünf Punkt eins"); "3.500" with groups of three is a
+/// thousands separator.
 fn number_words(token: &str) -> String {
     if !token.contains(',')
         && token.contains('.')
@@ -203,7 +204,7 @@ fn number_words(token: &str) -> String {
         && let Some((int, frac)) = token.split_once('.')
         && let Ok(i) = int.parse::<u64>()
     {
-        return format!("{} Komma {}", cardinal(i), digits(frac));
+        return format!("{} Punkt {}", cardinal(i), digits(frac));
     }
     let plain = !token.contains(['.', ',']);
     if plain && token.len() > 1 && token.starts_with('0') {
@@ -788,7 +789,7 @@ pub fn normalize(text: &str) -> String {
         })
         .into_owned();
 
-    // 1.3B -> eins Komma drei Milliarden
+    // 1.3B -> eins Punkt drei Milliarden
     s = MAGNITUDE
         .replace_all(&s, |c: &Captures| magnitude(&c[1], &c[2]))
         .into_owned();
@@ -1142,6 +1143,8 @@ mod tests {
                 "Doktor Müller kam circa drei Stunden später.",
             ),
             ("Platz 1.", "Platz eins."),
+            ("Es war 5.1 laut.", "Es war fünf Punkt eins laut."),
+            ("Es war 5,1 laut.", "Es war fünf Komma eins laut."),
             ("Kein Covid19 hier.", "Kein Covid19 hier."),
             (
                 "BLEU > 0,75. Dieser Wert.",
@@ -1149,11 +1152,11 @@ mod tests {
             ),
             (
                 "BLEU > 0.75. Dieser Wert.",
-                "BLEU größer als null Komma sieben fünf. Dieser Wert.",
+                "BLEU größer als null Punkt sieben fünf. Dieser Wert.",
             ),
             (
                 "Der Faktor 1.5 reicht.",
-                "Der Faktor eins Komma fünf reicht.",
+                "Der Faktor eins Punkt fünf reicht.",
             ),
             (
                 "Es kostet 3.500 Euro.",
@@ -1161,7 +1164,7 @@ mod tests {
             ),
             (
                 "Um 0.5 % gestiegen.",
-                "Um null Komma fünf Prozent gestiegen.",
+                "Um null Punkt fünf Prozent gestiegen.",
             ),
             ("Am 3.5. kam er.", "Am dritten fünften kam er."),
             ("Für $1.50 zu haben.", "Für ein Dollar fünfzig zu haben."),
@@ -1240,9 +1243,9 @@ mod tests {
             ("Kapitel IV", "Kapitel vier"),
             (
                 "für 125M, 1.3B und 6B",
-                "für hundertfünfundzwanzig Millionen, eins Komma drei Milliarden und sechs Milliarden",
+                "für hundertfünfundzwanzig Millionen, eins Punkt drei Milliarden und sechs Milliarden",
             ),
-            ("Pythia-6.9B", "Pythia-sechs Komma neun Milliarden"),
+            ("Pythia-6.9B", "Pythia-sechs Punkt neun Milliarden"),
             ("1B Parameter", "eine Milliarde Parameter"),
             (
                 "den 800GB großen Pile",
