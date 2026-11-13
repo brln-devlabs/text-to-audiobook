@@ -305,13 +305,16 @@ jobs:
           path: dist/*
 
   windows-cuda:
-    runs-on: windows-latest
+    # Visual Studio 2022: the C++ library of Visual Studio 2026 (windows-latest)
+    # only accepts CUDA 13.2 or newer (STL1002), and CUDA 13 would need a
+    # much newer NVIDIA driver than CUDA 12.8 (570).
+    runs-on: windows-2022
     env:
       CUDA_VERSION: "12.8.1"
       CUDA_COMPUTE_CAP: "80"
       # Host code of Candle's CUDA kernels with the static C runtime like
-      # everything else (.cargo/config.toml); Visual Studio versions newer
-      # than this CUDA knows are allowed.
+      # everything else (.cargo/config.toml); Visual Studio 2022 updates
+      # newer than this CUDA knows are allowed.
       NVCC_APPEND_FLAGS: "-Xcompiler=/MT -allow-unsupported-compiler"
 
     steps:
@@ -324,13 +327,17 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          # not the cache of the attempts with Visual Studio 2026
+          key: vs2022
 
-      # nvcc needs cl.exe in PATH.
+      # nvcc needs cl.exe in PATH, from Visual Studio 2022 (see runs-on).
       - name: Visual C++ environment
         shell: pwsh
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { Write-Error "Visual Studio 2022 with C++ tools not found"; exit 1 }
+          Write-Host "Visual Studio: $vs"
           cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
             if ($_ -match '^([^=]+)=(.*)$') {
               "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
