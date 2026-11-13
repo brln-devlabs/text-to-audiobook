@@ -60,7 +60,10 @@ if (@($copied.Keys) -match '^nvrtc64_') {
         Where-Object { $_.Name -notmatch '\.alt\.' } |
         Copy-Item -Destination $Out
 }
-foreach ($must in '^cudart64_', '^cublas64_', '^cublaslt64_') {
+# cuBLAS (and cuBLASLt through it) is always needed. The CUDA runtime and
+# NVRTC only if something uses them: unlike the Linux linker, MSVC leaves out
+# import libraries nobody calls (2026-11: nvcuda, cublas64_12, curand64_10).
+foreach ($must in '^cublas64_', '^cublaslt64_') {
     if (-not (@($copied.Keys) -match $must)) {
         throw "no DLL matching $must copied from ${CudaBin}"
     }
