@@ -12,5 +12,16 @@
   "TTS_MAX_TOKENS": 150,
   "TTS_MAX_WORDS_FALLBACK": 150,
   "CHAPTER_BY_CHAPTER": true,
-  "VOCALIZE_CHAPTER_NAMES": true
+  "VOCALIZE_CHAPTER_NAMES": true,
+  "NORMALIZE_NUMBERS": true,
+  "USE_LLM": false,
+  "LLM_GPU_LAYERS": 0,
+  "TTS_MODEL_NAME": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+  "TTS_LANGUAGE": "german",
+  "TTS_DTYPE": "bfloat16",
+  "REVIEW_NUMBERS": true,
+  "AUTO_CLEANUP": false,
+  "VOICE_SOURCE": "file",
+  "VOICE_REFERENCE_FILE": "/home/user/text-to-audiobook/voice_reference.wav",
+  "NARRATOR_PROMPT": "A calm, clear and warm narrator voice. Speaks at a measured, unhurried pace with natural intonation, like an experienced audiobook reader presenting a non-fiction text."
 }
