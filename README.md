@@ -53,7 +53,7 @@ All settings, stored in `settings.json`.
 
 ## System Requirements
 
-- **GPU** (optional): NVIDIA GPU with CUDA or Apple Silicon (Metal). Guide values from the Python version: 4 GB VRAM for the 0.6B model, 6 GB+ for 1.7B
+- **GPU** (optional): NVIDIA GPU with CUDA or Apple Silicon (Metal). Guide values from the Python version: 4 GB VRAM for the 0.6B model, 6 GB+ for 1.7B. The [CUDA packages](#nvidia-gpu-the-cuda-packages) need an RTX 30xx / compute capability 8.0 or newer and NVIDIA driver 570 or newer
 - **CPU**: quad-core or better (CPU-only works, but synthesis is slow)
 - **RAM**: 16 GB recommended (8 GB with the 0.6B model)
 - **Disk**: 10 GB free for models and output
@@ -83,12 +83,30 @@ The [releases](https://github.com/brln-devlabs/text-to-audiobook/releases) have 
 | other Linux (glibc 2.35+) | `text-to-audiobook-<version>-x86_64.AppImage` | allow "run as program" in the file properties (or `chmod +x`), double-click. The start menu entry is added on the first start |
 | macOS | `text-to-audiobook-macos` | `chmod +x`, start in a terminal |
 
-All packages compute on the CPU (macOS: Metal). The first start offers to download the speech model (once, several GB, see [Models](#hugging-face-token-optional)); texts, audiobooks and settings go to `Documents/text-to-audiobook` (see [Usage](#usage)).
+These packages compute on the CPU (macOS: Metal); for NVIDIA GPUs there are [CUDA packages](#nvidia-gpu-the-cuda-packages). The first start offers to download the speech model (once, several GB, see [Models](#hugging-face-token-optional)); texts, audiobooks and settings go to `Documents/text-to-audiobook` (see [Usage](#usage)).
 
 What the packages contain, and what not:
 
 - OpenSSL (Linux) and the C/C++ runtime (Windows) are linked statically; llama.cpp is built without OpenMP. Linux needs only libc, libstdc++ and the usual desktop libraries (X11/Wayland, `libxkbcommon`, EGL/Vulkan drivers); the `.deb` pulls in `libxkbcommon-x11-0`, the AppImage carries a copy for systems without it.
-- Not included: the models (downloaded on first use) and GPU support. For NVIDIA GPUs build from source with `--features cuda`.
+- Not included: the models (downloaded on first use). The packages above have no GPU support; the CUDA packages carry the CUDA libraries, but not the NVIDIA driver.
+
+#### NVIDIA GPU: the CUDA packages
+
+| System | File |
+|---|---|
+| Windows 10/11 | `text-to-audiobook-<version>-windows-cuda-setup.exe` or `…-windows-cuda-portable.zip` |
+| Ubuntu, Debian, Linux Mint | `text-to-audiobook-cuda_<version>-1_amd64.deb` |
+| other Linux (glibc 2.35+) | `text-to-audiobook-<version>-cuda-x86_64.AppImage` |
+
+They install like the others but are about 600–700 MB (about 1.1 GB installed), because they include NVIDIA's CUDA libraries (CUDA runtime, cuBLAS, cuRAND, NVRTC). Each one holds two builds of the program: the normal one and one built with `--features cuda` (`cuda\` next to the program, Linux: `/usr/lib/text-to-audiobook/cuda/`). The CUDA build is linked against the NVIDIA driver and would not start without it, so the normal build starts first; for the commands that speak (GUI, `generate`, `run`, `voice-ref`) it asks the driver for a GPU and, if there is one, runs the CUDA build in its place (`src/gpu.rs`). Without a GPU it carries on on the CPU, so a CUDA package works on any computer. The normal and the CUDA package replace each other.
+
+The GPU is used when:
+
+- the NVIDIA driver is version 570 or newer (it supports CUDA 12.8, which the kernels are built with; check with `nvidia-smi`),
+- the GPU has compute capability 8.0 or newer (RTX 30xx, RTX A-series and newer; GTX 10xx/16xx and RTX 20xx stay on the CPU),
+- it has enough memory for the model (otherwise the model is loaded on the CPU, with a warning in the log).
+
+The GUI shows in the top right corner what speech synthesis computes on: "Runs on GPU · <name>" (green) or "Runs on CPU" (amber if a GPU was meant to be used). Its tooltip and the log line "GPU not used: …" say why the GPU is not used. `TTA_DEVICE=cpu` keeps everything on the CPU.
 
 Building the packages yourself (the release workflow does the same):
 
@@ -96,6 +114,16 @@ Building the packages yourself (the release workflow does the same):
 cargo build --release --locked --features llm
 cargo deb --no-build --no-strip --output dist/                       # needs cargo-deb
 packaging/linux/build-appimage.sh target/release/text-to-audiobook 0.2.0 dist   # needs appimagetool
+```
+
+The CUDA packages (job `linux-cuda`) need a CUDA 12.8 toolkit (`packaging/cuda/fetch-cuda.py` fetches the needed parts from NVIDIA). The CUDA build comes first, because both builds write `target/release/text-to-audiobook`:
+
+```bash
+CUDA_COMPUTE_CAP=80 cargo build --release --locked --features llm,cuda
+packaging/linux/bundle-cuda.sh target/release/text-to-audiobook "$CUDA_PATH/lib" target/cuda-bundle
+cargo build --release --locked --features llm
+cargo deb --variant cuda --no-build --no-strip --output dist/
+packaging/linux/build-appimage.sh target/release/text-to-audiobook 0.2.0 dist target/cuda-bundle
 ```
 
 On Windows: `cargo build --release --locked --features llm,console-wrapper`, copy `target\release\text-to-audiobook-console.exe` to `dist\windows\text-to-audiobook.com` next to `text-to-audiobook.exe`, then `iscc /DAppVersion=0.2.0 packaging\windows\text-to-audiobook.iss` ([Inno Setup 6](https://jrsoftware.org/isinfo.php)).
@@ -117,6 +145,8 @@ cargo build --release --features cuda      # NVIDIA: Qwen3-TTS on the GPU
 cargo build --release --features llm-cuda  # NVIDIA: additionally Llama (llama.cpp) on the GPU
 cargo build --release --features metal     # Apple Silicon (includes the LLM)
 ```
+
+A CUDA build compiles its kernels for the GPU in the computer (found with `nvidia-smi`); `CUDA_COMPUTE_CAP=80` sets the compute capability instead (needed without a GPU, e.g. on a build server). The toolkit must not be newer than the CUDA version of the driver.
 
 The LLM is optional and not built by default. To use it (`USE_LLM = true`), add the `llm` feature, e.g. `cargo build --release --features llm` or `--features cuda,llm`; llama.cpp then runs on the CPU.
 
@@ -281,6 +311,7 @@ cargo clippy --all-targets
 | `preview` | provisional audiobook while Stage 2 runs (background thread) |
 | `gui`, `main` | egui desktop app and CLI |
 | `desktop_entry` | Linux: desktop entry and icon, so GNOME/KDE show the app icon |
+| `gpu` | NVIDIA GPU detection through the driver, hand-over to the CUDA build of the CUDA packages, CPU/GPU state for the GUI |
 
 ### Stage 1: Text preparation
 1. Discover projects → order files → clean Markdown → split into paragraph-aligned chunks
@@ -336,6 +367,7 @@ Format: `YYYY-MM-DD HH:MM:SS,mmm | LEVEL | module | message`
 | Build fails in `llama-cpp-sys-2` or `mp3lame-sys` | Install CMake and a C/C++ compiler |
 | `could not find native static library cudart_static` | Build with `--features cuda` (Llama stays on the CPU); for `llm-cuda` set `CUDA_LIBRARY_PATH` to the directory with the static CUDA libraries |
 | `CUDA out of memory` | Use the 0.6B model, keep `LLM_GPU_LAYERS = 0`, close other GPU programs |
+| CUDA package computes on the CPU ("Runs on CPU") | Hover the badge or look for "GPU not used" in the log; usually the NVIDIA driver is older than 570 or the GPU older than RTX 30xx (compute capability 8.0) |
 | GUI does not start on Linux (`xkbcommon`) | Install `libxkbcommon-x11-0` (Debian/Ubuntu) and GPU/OpenGL drivers |
 | AppImage does not start ("FUSE") | start it with `--appimage-extract-and-run`, or install FUSE (`sudo apt install fuse3`) |
 | Windows: no output in the console | type `text-to-audiobook` without `.exe` (runs `text-to-audiobook.com`), or call the `.com` directly |
@@ -356,7 +388,7 @@ Format: `YYYY-MM-DD HH:MM:SS,mmm | LEVEL | module | message`
 | --- | --- | --- |
 | Tests | Push to main/master/develop, PRs | `cargo test --no-default-features` on Linux (no GUI or model backends) and a CLI dry run |
 | Code Quality | Push to main/master/develop, PRs | `cargo fmt --check`, `cargo clippy` |
-| Build & Release | Git tags (v*), manual trigger | Windows installer and portable ZIP, Linux `.deb` and AppImage (built on Ubuntu 22.04), macOS binary; checks the run-time dependencies and makes a dry run of each package |
+| Build & Release | Git tags (v*), manual trigger | Windows installer and portable ZIP, Linux `.deb` and AppImage (built on Ubuntu 22.04), macOS binary, plus the same Windows and Linux packages with CUDA; checks the run-time dependencies and makes a dry run of each package |
 | Docker Build | Tags, main branch, manual | build and push the headless Docker image |
 
 ### Docker

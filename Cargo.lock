@@ -5479,6 +5479,8 @@ dependencies = [
  "hound",
  "id3",
  "indexmap",
+ "libc",
+ "libloading 0.8.9",
  "llama-cpp-2",
  "log",
  "mp3lame-encoder",

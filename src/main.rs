@@ -339,10 +339,28 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+/// Commands that load the speech model and so profit from the GPU.
+#[cfg(not(feature = "cuda"))]
+fn speaks(cli: &Cli) -> bool {
+    !cli.mock_models
+        && matches!(
+            cli.command,
+            None | Some(Command::Gui | Command::Generate | Command::Run | Command::VoiceRef)
+        )
+}
+
 fn main() -> ExitCode {
     #[cfg(all(windows, feature = "gui"))]
     let has_console = windows_console::attach_to_parent();
     let cli = Cli::parse();
+    // CUDA packages: the CUDA build next to this one takes over if there is
+    // an NVIDIA GPU (src/gpu.rs).
+    #[cfg(not(feature = "cuda"))]
+    if speaks(&cli)
+        && let Some(code) = text_to_audiobook::gpu::run_cuda_build()
+    {
+        return code;
+    }
     #[cfg(all(windows, feature = "gui"))]
     let is_gui = matches!(cli.command, None | Some(Command::Gui));
     match run(cli) {

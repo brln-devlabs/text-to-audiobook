@@ -28,6 +28,7 @@ pub mod chunker;
 pub mod config;
 #[cfg(all(feature = "gui", unix, not(target_os = "macos")))]
 pub mod desktop_entry;
+pub mod gpu;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod hub;
