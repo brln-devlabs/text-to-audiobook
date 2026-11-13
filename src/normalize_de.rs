@@ -198,13 +198,24 @@ static THOUSANDS: LazyLock<Regex> = LazyLock::new(|| re(r"^\d{1,3}(?:\.\d{3})+(?
 /// "Punkt" ("5.1" -> "fünf Punkt eins"); "3.500" with groups of three is a
 /// thousands separator.
 fn number_words(token: &str) -> String {
+    spell_number(token, "Punkt")
+}
+
+/// Like `number_words`, but a point between digits is a decimal point
+/// ("0.5" -> "null Komma fünf"): for percentages and millions/billions.
+fn decimal_words(token: &str) -> String {
+    spell_number(token, "Komma")
+}
+
+/// `point`: how a point between digits is read ("Punkt" or "Komma").
+fn spell_number(token: &str, point: &str) -> String {
     if !token.contains(',')
         && token.contains('.')
         && !THOUSANDS.is_match(token)
         && let Some((int, frac)) = token.split_once('.')
         && let Ok(i) = int.parse::<u64>()
     {
-        return format!("{} Punkt {}", cardinal(i), digits(frac));
+        return format!("{} {point} {}", cardinal(i), digits(frac));
     }
     let plain = !token.contains(['.', ',']);
     if plain && token.len() > 1 && token.starts_with('0') {
@@ -619,7 +630,7 @@ fn magnitude(num: &str, unit: &str) -> String {
     if num == "1" {
         one.to_string()
     } else {
-        format!("{} {many}", number_words(num))
+        format!("{} {many}", decimal_words(num))
     }
 }
 
@@ -684,6 +695,10 @@ static WITH_UNIT: LazyLock<Regex> = LazyLock::new(|| {
 });
 static NEGATIVE: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[\s(])[-–−](\d)"));
 static DECADE: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\d+)er\b"));
+/// Millions and up after a number ("1.3 Milliarden", also from "Mrd."):
+/// a point in the number is a decimal point.
+static LARGE_UNIT: LazyLock<Regex> =
+    LazyLock::new(|| re(r"^\s?(?:Millionen|Million|Milliarden|Milliarde|Billionen|Billion)\b"));
 static NUMBER: LazyLock<Regex> =
     LazyLock::new(|| re(r"\b(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+\.\d+|\d+,\d+|\d+)\b"));
 
@@ -789,7 +804,7 @@ pub fn normalize(text: &str) -> String {
         })
         .into_owned();
 
-    // 1.3B -> eins Punkt drei Milliarden
+    // 1.3B -> eins Komma drei Milliarden
     s = MAGNITUDE
         .replace_all(&s, |c: &Captures| magnitude(&c[1], &c[2]))
         .into_owned();
@@ -952,7 +967,9 @@ pub fn normalize(text: &str) -> String {
             match unit {
                 "€" | "EUR" | "Euro" => money(num, "Euro"),
                 "$" | "Dollar" => money(num, "Dollar"),
-                "%" | "Prozent" => count_with(num, "Prozent", "Prozent", false),
+                // A point is a decimal point here: "0.5 %" -> "null Komma fünf Prozent".
+                "%" | "Prozent" if num == "1" => "ein Prozent".to_string(),
+                "%" | "Prozent" => format!("{} Prozent", decimal_words(num)),
                 "°C" => count_with(num, "Grad Celsius", "Grad Celsius", false),
                 "°" => count_with(num, "Grad", "Grad", false),
                 "km/h" => count_with(num, "Kilometer pro Stunde", "Kilometer pro Stunde", false),
@@ -997,6 +1014,9 @@ pub fn normalize(text: &str) -> String {
             }
         }
         let tok = m.as_str();
+        if LARGE_UNIT.is_match(after) {
+            return Some(decimal_words(tok));
+        }
         if tok.len() == 4
             && !tok.contains(['.', ','])
             && let Ok(n) = tok.parse::<u64>()
@@ -1145,6 +1165,16 @@ mod tests {
             ("Platz 1.", "Platz eins."),
             ("Es war 5.1 laut.", "Es war fünf Punkt eins laut."),
             ("Es war 5,1 laut.", "Es war fünf Komma eins laut."),
+            ("Um 5.1 Prozent.", "Um fünf Komma eins Prozent."),
+            ("Nur 1 % davon.", "Nur ein Prozent davon."),
+            (
+                "Es kostet 1.3 Mrd. Euro.",
+                "Es kostet eins Komma drei Milliarden Euro.",
+            ),
+            (
+                "Mit 2.5 Millionen Menschen.",
+                "Mit zwei Komma fünf Millionen Menschen.",
+            ),
             ("Kein Covid19 hier.", "Kein Covid19 hier."),
             (
                 "BLEU > 0,75. Dieser Wert.",
@@ -1164,7 +1194,7 @@ mod tests {
             ),
             (
                 "Um 0.5 % gestiegen.",
-                "Um null Punkt fünf Prozent gestiegen.",
+                "Um null Komma fünf Prozent gestiegen.",
             ),
             ("Am 3.5. kam er.", "Am dritten fünften kam er."),
             ("Für $1.50 zu haben.", "Für ein Dollar fünfzig zu haben."),
@@ -1243,9 +1273,9 @@ mod tests {
             ("Kapitel IV", "Kapitel vier"),
             (
                 "für 125M, 1.3B und 6B",
-                "für hundertfünfundzwanzig Millionen, eins Punkt drei Milliarden und sechs Milliarden",
+                "für hundertfünfundzwanzig Millionen, eins Komma drei Milliarden und sechs Milliarden",
             ),
-            ("Pythia-6.9B", "Pythia-sechs Punkt neun Milliarden"),
+            ("Pythia-6.9B", "Pythia-sechs Komma neun Milliarden"),
             ("1B Parameter", "eine Milliarde Parameter"),
             (
                 "den 800GB großen Pile",

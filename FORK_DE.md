@@ -37,13 +37,15 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   bei deutschen Abschnitten. Ausprobieren ohne Hörbuch:
   `text-to-audiobook normalize "Am 3. Mai 1995 um 14:30 Uhr kostete es 5,50 €."`
   Ein Komma zwischen Ziffern wird „Komma“ gelesen, ein Punkt „Punkt“ („5,1“ → „fünf Komma
-  eins“, „5.1“ → „fünf Punkt eins“); Dreiergruppen wie „3.500“ bleiben Tausender.
+  eins“, „5.1“ → „fünf Punkt eins“); vor Prozent und Millionen/Milliarden ist der Punkt ein Komma
+  („0.5 %“ → „null Komma fünf Prozent“, „1.3 Mrd.“ → „eins Komma drei Milliarden“).
+  Dreiergruppen wie „3.500“ bleiben Tausender.
   Ordnungszahlen werden nur mit eindeutigem Wort davor umgewandelt („am 3.“, „der 3.“,
   „in der 3.“). Römische Zahlen nach Wörtern wie Kapitel, Teil, Band oder Akt werden zur
   Grundzahl („Kapitel IV“ → „Kapitel vier“), vor „Jahrhundert“ mit eindeutigem Wort davor
   zur Ordnungszahl („im XIX. Jahrhundert“ → „im neunzehnten Jahrhundert“).
   Für Fachtexte: Abschnittsnummern („Abschnitt 3.3“ → „drei Punkt drei“, „Anhang B.1“ →
-  „B Punkt eins“; „Anhang C“ bleibt ein Buchstabe), Modellgrößen („1.3B“ → „eins Punkt drei
+  „B Punkt eins“; „Anhang C“ bleibt ein Buchstabe), Modellgrößen („1.3B“ → „eins Komma drei
   Milliarden“, „125M“), GB/MB/TB, Versionen („SQuAD2.0“ → „zwei Punkt null“), arXiv-Nummern
   Ziffer für Ziffer, Tausender mit Leerzeichen („600 000“ → „sechshunderttausend“), Literaturangaben („33:1877–1901“ → „Band dreiunddreißig, Seiten …“;
   Seitenzahlen nie als Jahreszahl), Hochzahlen („10²“ → „zehn hoch zwei“) und Rechenzeichen (=, <, >, ≤, ≥,
