@@ -33,6 +33,7 @@ use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 
 use super::{mfcc, read_wav, tags, write_mono_wav};
+use crate::natsort::natural_cmp;
 
 const FRAME_MS: usize = 30;
 /// Spectral flatness above this counts as noise (speech ~0.1-0.5, white noise ~1.0).
@@ -262,7 +263,8 @@ fn siblings(chunks_dir: &Path, wav: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// `chunk_*.wav` in `dir`, sorted by name.
+/// `chunk_*.wav` in `dir`, in natural name order (`chunk_N_2` before
+/// `chunk_N_10`), which is reading order.
 pub fn chunk_wavs(dir: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|it| {
@@ -277,7 +279,13 @@ pub fn chunk_wavs(dir: &Path) -> Vec<PathBuf> {
                 .collect()
         })
         .unwrap_or_default();
-    v.sort();
+    let name = |p: &PathBuf| {
+        p.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    };
+    v.sort_by(|a, b| natural_cmp(&name(a), &name(b)));
     v
 }
 
@@ -502,6 +510,29 @@ mod tests {
                 (x as f32 / u32::MAX as f32 * 2.0 - 1.0) * amp
             })
             .collect()
+    }
+
+    #[test]
+    fn chunk_wavs_keep_reading_order_past_ten_parts() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = [
+            "chunk_000000.wav",
+            "chunk_000001_0.wav",
+            "chunk_000001_1.wav",
+            "chunk_000001_2.wav",
+            "chunk_000001_9.wav",
+            "chunk_000001_10.wav",
+            "chunk_000001_11.wav",
+            "chunk_000002.wav",
+        ];
+        for n in names.iter().rev() {
+            std::fs::write(dir.path().join(n), b"x").unwrap();
+        }
+        let got: Vec<String> = chunk_wavs(dir.path())
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(got, names);
     }
 
     #[test]
