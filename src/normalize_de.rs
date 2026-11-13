@@ -194,16 +194,29 @@ fn parse_number(s: &str) -> Option<(u64, Option<String>)> {
 static THOUSANDS: LazyLock<Regex> = LazyLock::new(|| re(r"^\d{1,3}(?:\.\d{3})+(?:,\d+)?$"));
 
 /// Number token in words: cardinal, decimal ("drei Komma eins vier"),
-/// leading zeros digit by digit. A decimal point ("0.75") is read like a
-/// decimal comma; "3.500" with groups of three is a thousands separator.
+/// leading zeros digit by digit. A point between digits is read as
+/// "Punkt" ("5.1" -> "fünf Punkt eins"); "3.500" with groups of three is a
+/// thousands separator.
 fn number_words(token: &str) -> String {
+    spell_number(token, "Punkt")
+}
+
+/// Like `number_words`, but a point between digits is a decimal point
+/// ("0.5" -> "null Komma fünf"): for numbers with a unit, percentages and
+/// millions/billions.
+fn decimal_words(token: &str) -> String {
+    spell_number(token, "Komma")
+}
+
+/// `point`: how a point between digits is read ("Punkt" or "Komma").
+fn spell_number(token: &str, point: &str) -> String {
     if !token.contains(',')
         && token.contains('.')
         && !THOUSANDS.is_match(token)
         && let Some((int, frac)) = token.split_once('.')
         && let Ok(i) = int.parse::<u64>()
     {
-        return format!("{} Komma {}", cardinal(i), digits(frac));
+        return format!("{} {point} {}", cardinal(i), digits(frac));
     }
     let plain = !token.contains(['.', ',']);
     if plain && token.len() > 1 && token.starts_with('0') {
@@ -221,12 +234,13 @@ fn number_words(token: &str) -> String {
     }
 }
 
-/// Number with a following noun: "ein"/"eine" for 1.
+/// Number with a following unit: "ein"/"eine" for 1, a point is a
+/// decimal point ("5.1 km" -> "fünf Komma eins Kilometer").
 fn count_with(token: &str, singular: &str, plural: &str, feminine: bool) -> String {
     if token == "1" {
         format!("{} {singular}", if feminine { "eine" } else { "ein" })
     } else {
-        format!("{} {plural}", number_words(token))
+        format!("{} {plural}", decimal_words(token))
     }
 }
 
@@ -618,7 +632,7 @@ fn magnitude(num: &str, unit: &str) -> String {
     if num == "1" {
         one.to_string()
     } else {
-        format!("{} {many}", number_words(num))
+        format!("{} {many}", decimal_words(num))
     }
 }
 
@@ -683,6 +697,18 @@ static WITH_UNIT: LazyLock<Regex> = LazyLock::new(|| {
 });
 static NEGATIVE: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[\s(])[-–−](\d)"));
 static DECADE: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\d+)er\b"));
+/// Unit words and millions and up after a number ("5.1 Kilometer",
+/// "1.3 Milliarden", also from "Mrd."): a point in the number is a decimal
+/// point, and the number is a count, not a year ("1850 Meter").
+static UNIT_WORD: LazyLock<Regex> = LazyLock::new(|| {
+    re(concat!(
+        r"^\s?(?:Millionen|Million|Milliarden|Milliarde|Billionen|Billion|",
+        r"Kilometer|Zentimeter|Millimeter|Meter|Kilogramm|Milligramm|Gramm|Tonnen|Tonne|",
+        r"Milliliter|Liter|Millisekunden|Millisekunde|Sekunden|Sekunde|Minuten|Minute|",
+        r"Stunden|Stunde|Grad|Terabyte|Gigabyte|Megabyte|Kilobyte|Gigahertz|Megahertz|",
+        r"Kilowattstunden|Kilowatt|Watt|Volt)\b"
+    ))
+});
 static NUMBER: LazyLock<Regex> =
     LazyLock::new(|| re(r"\b(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+\.\d+|\d+,\d+|\d+)\b"));
 
@@ -996,6 +1022,9 @@ pub fn normalize(text: &str) -> String {
             }
         }
         let tok = m.as_str();
+        if UNIT_WORD.is_match(after) {
+            return Some(decimal_words(tok));
+        }
         if tok.len() == 4
             && !tok.contains(['.', ','])
             && let Ok(n) = tok.parse::<u64>()
@@ -1142,6 +1171,31 @@ mod tests {
                 "Doktor Müller kam circa drei Stunden später.",
             ),
             ("Platz 1.", "Platz eins."),
+            ("Es war 5.1 laut.", "Es war fünf Punkt eins laut."),
+            ("Es war 5,1 laut.", "Es war fünf Komma eins laut."),
+            ("Um 5.1 Prozent.", "Um fünf Komma eins Prozent."),
+            ("Nur 1 % davon.", "Nur ein Prozent davon."),
+            ("Noch 5.1 km.", "Noch fünf Komma eins Kilometer."),
+            ("Es wog 2.5 kg.", "Es wog zwei Komma fünf Kilogramm."),
+            (
+                "Es hatte 36.6 °C.",
+                "Es hatte sechsunddreißig Komma sechs Grad Celsius.",
+            ),
+            ("Nach 1.5 h.", "Nach eins Komma fünf Stunden."),
+            ("Noch 5.1 Kilometer.", "Noch fünf Komma eins Kilometer."),
+            ("Es waren 2.5 Liter.", "Es waren zwei Komma fünf Liter."),
+            (
+                "Der Gipfel liegt 1850 Meter hoch.",
+                "Der Gipfel liegt tausendachthundertfünfzig Meter hoch.",
+            ),
+            (
+                "Es kostet 1.3 Mrd. Euro.",
+                "Es kostet eins Komma drei Milliarden Euro.",
+            ),
+            (
+                "Mit 2.5 Millionen Menschen.",
+                "Mit zwei Komma fünf Millionen Menschen.",
+            ),
             ("Kein Covid19 hier.", "Kein Covid19 hier."),
             (
                 "BLEU > 0,75. Dieser Wert.",
@@ -1149,11 +1203,11 @@ mod tests {
             ),
             (
                 "BLEU > 0.75. Dieser Wert.",
-                "BLEU größer als null Komma sieben fünf. Dieser Wert.",
+                "BLEU größer als null Punkt sieben fünf. Dieser Wert.",
             ),
             (
                 "Der Faktor 1.5 reicht.",
-                "Der Faktor eins Komma fünf reicht.",
+                "Der Faktor eins Punkt fünf reicht.",
             ),
             (
                 "Es kostet 3.500 Euro.",

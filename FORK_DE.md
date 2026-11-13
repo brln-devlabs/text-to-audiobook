@@ -36,6 +36,11 @@ Ausgabeordner der Python-Version werden weiterverwendet.
   Geldbeträge, Prozent, Maßeinheiten, Bereiche und gängige Abkürzungen ausgeschrieben, nur
   bei deutschen Abschnitten. Ausprobieren ohne Hörbuch:
   `text-to-audiobook normalize "Am 3. Mai 1995 um 14:30 Uhr kostete es 5,50 €."`
+  Ein Komma zwischen Ziffern wird „Komma“ gelesen, ein Punkt „Punkt“ („5,1“ → „fünf Komma
+  eins“, „5.1“ → „fünf Punkt eins“); mit Einheit, vor Prozent und vor Millionen/Milliarden ist der
+  Punkt ein Komma („5.1 km“ → „fünf Komma eins Kilometer“, „0.5 %“ → „null Komma fünf Prozent“,
+  „1.3 Mrd.“ → „eins Komma drei Milliarden“).
+  Dreiergruppen wie „3.500“ bleiben Tausender.
   Ordnungszahlen werden nur mit eindeutigem Wort davor umgewandelt („am 3.“, „der 3.“,
   „in der 3.“). Römische Zahlen nach Wörtern wie Kapitel, Teil, Band oder Akt werden zur
   Grundzahl („Kapitel IV“ → „Kapitel vier“), vor „Jahrhundert“ mit eindeutigem Wort davor
