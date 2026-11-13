@@ -37,7 +37,9 @@ use crate::chunker::word_count;
 use crate::config::{Paths, Settings};
 use crate::segment::Segment;
 
-pub const MAX_SUB_PARTS: usize = 10;
+/// Sub-parts per chunk in the old 1-indexed naming (`_1` .. `_10`); only
+/// used to migrate such names. New chunks have no limit on sub-parts.
+const LEGACY_MAX_SUB_PARTS: usize = 10;
 pub const DEFAULT_LANGUAGE: &str = "english";
 
 /// Sampling for chunks (Python: temperature=0.6, top_p=0.9).
@@ -593,12 +595,6 @@ impl TtsEngine {
                 self.synthesize_single(&parts[0], &ref_audio, out_path, language)?;
                 return Ok(vec![out_path.to_path_buf()]);
             }
-            if parts.len() > MAX_SUB_PARTS {
-                bail!(
-                    "Segment split produced {} sub-parts; max supported is {MAX_SUB_PARTS}",
-                    parts.len()
-                );
-            }
             // Multi-part chunks: every part gets a _N suffix (0-indexed); the
             // unsuffixed name is reserved for single-part chunks.
             let stem = out_path
@@ -682,7 +678,7 @@ impl TtsEngine {
             {
                 continue;
             }
-            let legacy: Vec<(usize, PathBuf)> = (1..=MAX_SUB_PARTS)
+            let legacy: Vec<(usize, PathBuf)> = (1..=LEGACY_MAX_SUB_PARTS)
                 .map(|k| (k, output_dir.join(format!("{stem}_{k}.wav"))))
                 .filter(|(_, p)| p.exists())
                 .collect();
@@ -761,15 +757,10 @@ impl TtsEngine {
         if base.exists() {
             return vec![base];
         }
-        let mut parts = Vec::new();
-        for k in 0..MAX_SUB_PARTS {
-            let p = output_dir.join(format!("chunk_{i:06}_{k}.wav"));
-            if !p.exists() {
-                break;
-            }
-            parts.push(p);
-        }
-        parts
+        (0..)
+            .map(|k| output_dir.join(format!("chunk_{i:06}_{k}.wav")))
+            .take_while(|p| p.exists())
+            .collect()
     }
 
     /// Synthesize all segments into `output_dir`, skipping chunks that
@@ -1288,6 +1279,35 @@ pub mod tests {
             .unwrap();
         assert_eq!(again, wavs);
         assert_eq!(fake.clone_calls.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn segments_may_need_more_than_ten_sub_parts() {
+        let s = Settings {
+            tts_max_words_fallback: 4,
+            ..Settings::default()
+        };
+        let (dir, fake, mut engine) = setup(&s);
+        let text = (1..=12)
+            .map(|n| format!("Satz Nummer {n} hier."))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(engine.split_if_too_long(&text).len(), 12);
+        let out = dir.path().join("out");
+        let wavs = engine
+            .process_all(&segs(&[(&text, None)]), &out, None, None)
+            .unwrap();
+        let expected: Vec<PathBuf> = (0..12)
+            .map(|k| out.join(format!("chunk_000000_{k}.wav")))
+            .collect();
+        assert_eq!(wavs, expected);
+        assert_eq!(TtsEngine::existing_parts(&out, 0), expected);
+        // A second run reuses all twelve parts.
+        let again = engine
+            .process_all(&segs(&[(&text, None)]), &out, None, None)
+            .unwrap();
+        assert_eq!(again, expected);
+        assert_eq!(fake.clone_calls.lock().unwrap().len(), 12);
     }
 
     #[test]
