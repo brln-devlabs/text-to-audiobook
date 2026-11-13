@@ -1,6 +1,6 @@
 [package]
 name = "text-to-audiobook"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 description = "Markdown-Texte mit Llama 3.2 (llama.cpp) und Qwen3-TTS (Candle) in Hörbücher verwandeln"

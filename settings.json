@@ -21,7 +21,5 @@
   "TTS_DTYPE": "bfloat16",
   "REVIEW_NUMBERS": true,
   "AUTO_CLEANUP": false,
-  "VOICE_SOURCE": "file",
-  "VOICE_REFERENCE_FILE": "/home/user/text-to-audiobook/voice_reference.wav",
   "NARRATOR_PROMPT": "A calm, clear and warm narrator voice. Speaks at a measured, unhurried pace with natural intonation, like an experienced audiobook reader presenting a non-fiction text."
 }
