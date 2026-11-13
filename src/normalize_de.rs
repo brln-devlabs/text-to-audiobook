@@ -202,7 +202,8 @@ fn number_words(token: &str) -> String {
 }
 
 /// Like `number_words`, but a point between digits is a decimal point
-/// ("0.5" -> "null Komma fünf"): for percentages and millions/billions.
+/// ("0.5" -> "null Komma fünf"): for numbers with a unit, percentages and
+/// millions/billions.
 fn decimal_words(token: &str) -> String {
     spell_number(token, "Komma")
 }
@@ -233,12 +234,13 @@ fn spell_number(token: &str, point: &str) -> String {
     }
 }
 
-/// Number with a following noun: "ein"/"eine" for 1.
+/// Number with a following unit: "ein"/"eine" for 1, a point is a
+/// decimal point ("5.1 km" -> "fünf Komma eins Kilometer").
 fn count_with(token: &str, singular: &str, plural: &str, feminine: bool) -> String {
     if token == "1" {
         format!("{} {singular}", if feminine { "eine" } else { "ein" })
     } else {
-        format!("{} {plural}", number_words(token))
+        format!("{} {plural}", decimal_words(token))
     }
 }
 
@@ -695,10 +697,18 @@ static WITH_UNIT: LazyLock<Regex> = LazyLock::new(|| {
 });
 static NEGATIVE: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[\s(])[-–−](\d)"));
 static DECADE: LazyLock<Regex> = LazyLock::new(|| re(r"\b(\d+)er\b"));
-/// Millions and up after a number ("1.3 Milliarden", also from "Mrd."):
-/// a point in the number is a decimal point.
-static LARGE_UNIT: LazyLock<Regex> =
-    LazyLock::new(|| re(r"^\s?(?:Millionen|Million|Milliarden|Milliarde|Billionen|Billion)\b"));
+/// Unit words and millions and up after a number ("5.1 Kilometer",
+/// "1.3 Milliarden", also from "Mrd."): a point in the number is a decimal
+/// point, and the number is a count, not a year ("1850 Meter").
+static UNIT_WORD: LazyLock<Regex> = LazyLock::new(|| {
+    re(concat!(
+        r"^\s?(?:Millionen|Million|Milliarden|Milliarde|Billionen|Billion|",
+        r"Kilometer|Zentimeter|Millimeter|Meter|Kilogramm|Milligramm|Gramm|Tonnen|Tonne|",
+        r"Milliliter|Liter|Millisekunden|Millisekunde|Sekunden|Sekunde|Minuten|Minute|",
+        r"Stunden|Stunde|Grad|Terabyte|Gigabyte|Megabyte|Kilobyte|Gigahertz|Megahertz|",
+        r"Kilowattstunden|Kilowatt|Watt|Volt)\b"
+    ))
+});
 static NUMBER: LazyLock<Regex> =
     LazyLock::new(|| re(r"\b(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+\.\d+|\d+,\d+|\d+)\b"));
 
@@ -967,9 +977,7 @@ pub fn normalize(text: &str) -> String {
             match unit {
                 "€" | "EUR" | "Euro" => money(num, "Euro"),
                 "$" | "Dollar" => money(num, "Dollar"),
-                // A point is a decimal point here: "0.5 %" -> "null Komma fünf Prozent".
-                "%" | "Prozent" if num == "1" => "ein Prozent".to_string(),
-                "%" | "Prozent" => format!("{} Prozent", decimal_words(num)),
+                "%" | "Prozent" => count_with(num, "Prozent", "Prozent", false),
                 "°C" => count_with(num, "Grad Celsius", "Grad Celsius", false),
                 "°" => count_with(num, "Grad", "Grad", false),
                 "km/h" => count_with(num, "Kilometer pro Stunde", "Kilometer pro Stunde", false),
@@ -1014,7 +1022,7 @@ pub fn normalize(text: &str) -> String {
             }
         }
         let tok = m.as_str();
-        if LARGE_UNIT.is_match(after) {
+        if UNIT_WORD.is_match(after) {
             return Some(decimal_words(tok));
         }
         if tok.len() == 4
@@ -1167,6 +1175,19 @@ mod tests {
             ("Es war 5,1 laut.", "Es war fünf Komma eins laut."),
             ("Um 5.1 Prozent.", "Um fünf Komma eins Prozent."),
             ("Nur 1 % davon.", "Nur ein Prozent davon."),
+            ("Noch 5.1 km.", "Noch fünf Komma eins Kilometer."),
+            ("Es wog 2.5 kg.", "Es wog zwei Komma fünf Kilogramm."),
+            (
+                "Es hatte 36.6 °C.",
+                "Es hatte sechsunddreißig Komma sechs Grad Celsius.",
+            ),
+            ("Nach 1.5 h.", "Nach eins Komma fünf Stunden."),
+            ("Noch 5.1 Kilometer.", "Noch fünf Komma eins Kilometer."),
+            ("Es waren 2.5 Liter.", "Es waren zwei Komma fünf Liter."),
+            (
+                "Der Gipfel liegt 1850 Meter hoch.",
+                "Der Gipfel liegt tausendachthundertfünfzig Meter hoch.",
+            ),
             (
                 "Es kostet 1.3 Mrd. Euro.",
                 "Es kostet eins Komma drei Milliarden Euro.",
