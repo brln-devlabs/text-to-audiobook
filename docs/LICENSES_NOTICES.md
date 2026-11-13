@@ -69,6 +69,21 @@ Models are downloaded at runtime and are not part of this repository or its bina
 - Nearly all crates use permissive licenses (MIT, Apache-2.0, BSD, Zlib, ISC, Unicode-3.0).
 - The MP3 encoder (LAME, via mp3lame-sys/mp3lame-encoder) is LGPL. It is linked into the AGPL-licensed program, whose complete source is available, which satisfies the LGPL.
 
+## NVIDIA CUDA libraries (CUDA packages only)
+
+The installation packages with `cuda` in their name additionally contain
+NVIDIA CUDA runtime libraries from the CUDA Toolkit 12.8: the CUDA runtime
+(`cudart`), cuBLAS and cuBLASLt, cuRAND and NVRTC (Windows: `cuda\*.dll`,
+Linux: `/usr/lib/text-to-audiobook/cuda/*.so*`). They are proprietary
+software, © NVIDIA Corporation, redistributed unmodified under the
+redistribution terms of the
+[NVIDIA CUDA Toolkit End User License Agreement](https://docs.nvidia.com/cuda/eula/)
+(Attachment A, redistributable software). They are not covered by the
+project license. The NVIDIA driver is not included. The packages without
+`cuda` in their name contain no NVIDIA software.
+
+---
+
 ## Obtaining Full License Texts
 
 1. Visit the project's repository (links above)
@@ -87,4 +102,4 @@ For questions regarding licensing, please contact: admin@seccodesmith.pl
 
 ---
 
-*Last Updated: 2026-11-10*
+*Last Updated: 2026-11-13*

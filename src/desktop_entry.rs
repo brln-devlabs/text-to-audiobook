@@ -47,7 +47,11 @@ pub fn install_for_current_user(project_root: &Path, icon_png: &[u8]) {
         log::debug!("desktop entry skipped: neither XDG_DATA_HOME nor HOME set");
         return;
     };
-    let exe = match appimage_path().map_or_else(std::env::current_exe, Ok) {
+    // Started by the normal build of a CUDA package: the entry starts that one.
+    let exe = match appimage_path()
+        .or_else(crate::gpu::launcher_exe)
+        .map_or_else(std::env::current_exe, Ok)
+    {
         Ok(p) => p,
         Err(e) => {
             log::debug!("desktop entry skipped: {e}");

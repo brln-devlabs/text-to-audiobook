@@ -3,7 +3,11 @@
 ;   iscc /DAppVersion=0.2.0 /DSourceDir=..\..\dist\windows packaging\windows\text-to-audiobook.iss
 ;
 ; SourceDir holds text-to-audiobook.exe (GUI build) and text-to-audiobook.com
-; (console front end, src/bin/console.rs). The installer needs no
+; (console front end, src/bin/console.rs). With /DCuda it also holds cuda\
+; (packaging\windows\bundle-cuda.ps1: the CUDA build with its DLLs, used
+; when there is an NVIDIA GPU, src/gpu.rs) and the file is called
+; ...-windows-cuda-setup.exe. Both variants share the AppId, so either one
+; replaces the other. The installer needs no
 ; administrator rights: it installs for the current user into
 ; %LOCALAPPDATA%\Programs. Texts, audiobooks and settings live in
 ; Documents\text-to-audiobook, the speech models in
@@ -17,6 +21,11 @@
 #endif
 #ifndef OutputDir
   #define OutputDir "..\..\dist"
+#endif
+#ifdef Cuda
+  #define Variant "-cuda"
+#else
+  #define Variant ""
 #endif
 
 [Setup]
@@ -38,7 +47,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir={#OutputDir}
-OutputBaseFilename=text-to-audiobook-{#AppVersion}-windows-setup
+OutputBaseFilename=text-to-audiobook-{#AppVersion}-windows{#Variant}-setup
 SetupIconFile=..\..\assets\icon.ico
 UninstallDisplayIcon={app}\text-to-audiobook.exe
 UninstallDisplayName=text-to-audiobook
@@ -46,6 +55,11 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 CloseApplications=yes
+#ifdef Cuda
+; about 1 GB of CUDA DLLs
+LZMAUseSeparateProcess=yes
+LZMANumBlockThreads=4
+#endif
 
 [Languages]
 Name: "german"; MessagesFile: "compiler:Languages\German.isl"
@@ -58,9 +72,17 @@ english.DataNote=Texts, audiobooks and settings are kept in "Documents\text-to-a
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
+[InstallDelete]
+; The CUDA build of an earlier installation: an update brings its own, the
+; normal variant none (a stale one would still be started).
+Type: filesandordirs; Name: "{app}\cuda"
+
 [Files]
 Source: "{#SourceDir}\text-to-audiobook.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\text-to-audiobook.com"; DestDir: "{app}"; Flags: ignoreversion
+#ifdef Cuda
+Source: "{#SourceDir}\cuda\*"; DestDir: "{app}\cuda"; Flags: ignoreversion recursesubdirs
+#endif
 Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "..\..\docs\LICENSES_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion

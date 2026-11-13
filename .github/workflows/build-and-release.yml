@@ -3,8 +3,12 @@ name: Build and Release
 # Installation packages for people without a build environment:
 #   Windows: setup.exe (Inno Setup) and a portable ZIP
 #   Linux:   AppImage (any distribution) and .deb (Debian, Ubuntu, Mint)
-#   macOS:   plain binary (as before)
-# All CPU builds; the speech model is downloaded by the program on first use.
+#   macOS:   plain binary (as before, Metal)
+# The plain packages compute on the CPU. The "-cuda" packages (jobs
+# linux-cuda and windows-cuda) additionally carry a CUDA build with the CUDA
+# libraries; the program hands over to it when there is an NVIDIA GPU
+# (src/gpu.rs) and stays on the CPU otherwise. The speech model is
+# downloaded by the program on first use.
 
 on:
   push:
@@ -194,6 +198,205 @@ jobs:
           name: macos
           path: dist/*
 
+  # CUDA packages. Own jobs, so a CUDA problem does not hold up the others.
+  linux-cuda:
+    runs-on: ubuntu-22.04
+    env:
+      # Toolkit from NVIDIA's redistributable archives (packaging/cuda/fetch-cuda.py).
+      # The driver must support this CUDA version (12.8: driver 570 or newer).
+      CUDA_VERSION: "12.8.1"
+      # Candle's kernels as PTX for compute capability 8.0 (RTX 30xx, A-series
+      # and newer); the driver compiles them for newer GPUs on first use.
+      CUDA_COMPUTE_CAP: "80"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake perl libxkbcommon-x11-0 libxcb-xkb1 desktop-file-utils
+
+      - name: Install CUDA toolkit
+        run: |
+          python3 packaging/cuda/fetch-cuda.py --version "$CUDA_VERSION" \
+            --dest "$RUNNER_TEMP/cuda" --drop-static \
+            cuda_nvcc cuda_cudart cuda_cccl cuda_nvrtc libcublas libcurand 'cuda_crt?' 'libnvvm?'
+          echo "CUDA_PATH=$RUNNER_TEMP/cuda" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/cuda/bin" >> "$GITHUB_PATH"
+
+      # First, because the normal build below writes the same file name.
+      - name: Build CUDA binary
+        run: |
+          nvcc --version
+          cargo build --release --locked --features llm,cuda
+          packaging/linux/bundle-cuda.sh target/release/text-to-audiobook \
+            "$CUDA_PATH/lib" target/cuda-bundle
+
+      - name: Check the CUDA build
+        run: |
+          bin=target/cuda-bundle/text-to-audiobook-cuda
+          readelf -d "$bin" | grep -E 'NEEDED|RPATH'
+          # Without an NVIDIA driver the stub from the toolkit stands in for it.
+          mkdir -p "$RUNNER_TEMP/driver"
+          ln -sf "$CUDA_PATH/lib/stubs/libcuda.so" "$RUNNER_TEMP/driver/libcuda.so.1"
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/driver"
+          ldd "$bin" | tee ldd.txt
+          if grep 'not found' ldd.txt; then exit 1; fi
+          # The CUDA libraries come from the bundle (RPATH $ORIGIN)
+          grep -E 'libcublas\.so\.12 => .*/cuda-bundle/' ldd.txt
+          "$bin" --version
+          mkdir -p demo/input
+          printf 'Ein kurzer Text. Mit zwei Sätzen.\n' > demo/input/Probe.md
+          "$bin" --root demo --mock-models run
+          test -s demo/output/Probe/final/Probe.mp3
+
+      - name: Build normal binary
+        run: cargo build --release --locked --features llm
+
+      - name: Dry run
+        run: |
+          rm -rf demo && mkdir -p demo/input
+          printf 'Ein kurzer Text. Mit zwei Sätzen.\n\nNeuer Absatz.\n' > demo/input/Probe.md
+          target/release/text-to-audiobook --root demo --mock-models run
+          test -s demo/output/Probe/final/Probe.mp3
+
+      - name: Version
+        id: version
+        run: echo "version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')" >> "$GITHUB_OUTPUT"
+
+      - name: Debian package
+        run: |
+          cargo install cargo-deb --locked
+          mkdir -p dist
+          cargo deb --variant cuda --no-build --no-strip --output dist/
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb | grep -E 'usr/(bin|lib)/'
+
+      - name: AppImage
+        run: |
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          APPIMAGETOOL="$PWD/appimagetool" packaging/linux/build-appimage.sh \
+            target/release/text-to-audiobook "${{ steps.version.outputs.version }}" dist \
+            target/cuda-bundle
+          chmod +x dist/*.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/*.AppImage --version
+          ls -lh dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-cuda
+          path: dist/*
+
+  windows-cuda:
+    runs-on: windows-latest
+    env:
+      CUDA_VERSION: "12.8.1"
+      CUDA_COMPUTE_CAP: "80"
+      # Host code of Candle's CUDA kernels with the static C runtime like
+      # everything else (.cargo/config.toml); Visual Studio versions newer
+      # than this CUDA knows are allowed.
+      NVCC_APPEND_FLAGS: "-Xcompiler=/MT -allow-unsupported-compiler"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # nvcc needs cl.exe in PATH.
+      - name: Visual C++ environment
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') {
+              "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+
+      - name: Install CUDA toolkit
+        shell: pwsh
+        run: |
+          python packaging/cuda/fetch-cuda.py --version $env:CUDA_VERSION `
+            --dest "$env:RUNNER_TEMP\cuda" --drop-static `
+            cuda_nvcc cuda_cudart cuda_cccl cuda_nvrtc libcublas libcurand "cuda_crt?" "libnvvm?"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "CUDA_PATH=$env:RUNNER_TEMP\cuda" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "$env:RUNNER_TEMP\cuda\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # First, because the normal build below writes the same file name.
+      - name: Build CUDA binary
+        shell: pwsh
+        run: |
+          nvcc --version
+          cargo build --release --locked --features llm,cuda
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          packaging\windows\bundle-cuda.ps1 -Binary target\release\text-to-audiobook.exe `
+            -CudaBin "$env:CUDA_PATH\bin" -Out dist\windows\cuda
+
+      - name: Build normal binaries
+        run: cargo build --release --locked --features llm,console-wrapper
+
+      - name: Collect files
+        shell: bash
+        run: |
+          cp target/release/text-to-audiobook.exe dist/windows/
+          cp target/release/text-to-audiobook-console.exe dist/windows/text-to-audiobook.com
+
+      - name: Dry run through the console front end
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force demo\input | Out-Null
+          Set-Content -Encoding utf8 demo\input\Probe.md "Ein kurzer Text. Mit zwei Sätzen."
+          dist\windows\text-to-audiobook.com --root demo --mock-models run
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (-not (Test-Path demo\output\Probe\final\Probe.mp3)) { Write-Error "no audiobook"; exit 1 }
+
+      - name: Installer and portable ZIP
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y | Out-Null
+          }
+          & $iscc "/DAppVersion=$version" /DCuda packaging\windows\text-to-audiobook.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Copy-Item LICENSE, docs\LICENSES_NOTICES.md dist\windows\
+          Compress-Archive -Path dist\windows\* `
+            -DestinationPath "dist\text-to-audiobook-$version-windows-cuda-portable.zip"
+          Remove-Item -Recurse dist\windows
+          Get-ChildItem dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cuda
+          path: dist/*
+
   test:
     runs-on: ubuntu-latest
 
@@ -210,10 +413,11 @@ jobs:
         run: cargo test --locked --features llm
 
   create-release:
-    needs: [linux, windows, macos, test]
+    needs: [linux, windows, macos, linux-cuda, windows-cuda, test]
     runs-on: ubuntu-latest
     # Without a macOS runner (the job then waits and is cancelled) the
-    # release still comes out, just without the macOS binary.
+    # release still comes out, just without the macOS binary; the same
+    # for the CUDA packages if their build fails.
     if: >-
       always() && startsWith(github.ref, 'refs/tags/v')
       && needs.linux.result == 'success'
@@ -255,13 +459,22 @@ jobs:
             Beim ersten Start bietet das Programm an, das Sprachmodell herunterzuladen (einmalig,
             mehrere GB). Texte, Hörbücher und Einstellungen liegen in `Dokumente/text-to-audiobook`.
 
-            Alle Pakete rechnen auf dem Prozessor (CPU). Für NVIDIA-Grafikkarten aus dem Quelltext
-            bauen: `cargo build --release --features cuda`.
+            ### Mit NVIDIA-Grafikkarte: die `-cuda`-Pakete
+
+            Die normalen Pakete rechnen auf dem Prozessor (CPU). Die Pakete mit `cuda` im Namen
+            (`…-windows-cuda-setup.exe`, `…-windows-cuda-portable.zip`, `text-to-audiobook-cuda_….deb`,
+            `…-cuda-x86_64.AppImage`) bringen zusätzlich die NVIDIA-Bibliotheken mit (rund 600–700 MB
+            Download) und rechnen automatisch auf der Grafikkarte, wenn eine passende da ist, sonst
+            auf der CPU. Voraussetzungen für die GPU: NVIDIA-Grafikkarte ab RTX 30xx bzw.
+            Compute Capability 8.0 und ein NVIDIA-Treiber ab Version 570. Rechts oben im Programm
+            steht, ob es auf der GPU oder der CPU rechnet, und beim Darüberfahren mit der Maus, warum.
 
             ## Installation (English)
 
             Windows: run the `setup.exe` (unsigned: "More info" → "Run anyway"). Ubuntu/Debian/Mint:
             open the `.deb`. Other Linux: make the `.AppImage` executable and start it. The program
             offers to download the speech model on first start; data lives in
-            `Documents/text-to-audiobook`. See
+            `Documents/text-to-audiobook`. The packages with `cuda` in their name (about 600–700 MB)
+            compute on an NVIDIA GPU when there is one (RTX 30xx / compute capability 8.0 or newer,
+            driver 570 or newer) and on the CPU otherwise; the others always use the CPU. See
             [README.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/README.md).

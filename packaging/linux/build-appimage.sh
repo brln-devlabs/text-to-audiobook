@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Build text-to-audiobook-<version>-x86_64.AppImage from a release binary.
 #
-#   packaging/linux/build-appimage.sh <binary> <version> <output dir>
+#   packaging/linux/build-appimage.sh <binary> <version> <output dir> [<cuda dir>]
+#
+# With <cuda dir> (made by bundle-cuda.sh) the CUDA build and its libraries
+# go to usr/lib/text-to-audiobook/cuda/, where the normal build looks for
+# them (src/gpu.rs), and the file is called
+# text-to-audiobook-<version>-cuda-x86_64.AppImage.
 #
 # Needs appimagetool (APPIMAGETOOL, default: appimagetool in PATH) and, to
 # bundle the fallback copy of libxkbcommon-x11, the packages
@@ -11,6 +16,7 @@ set -euo pipefail
 bin=${1:?binary}
 version=${2:?version}
 out=${3:?output dir}
+cuda=${4:-}
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 tool=${APPIMAGETOOL:-appimagetool}
@@ -43,7 +49,18 @@ for lib in libxkbcommon-x11.so.0 libxcb-xkb.so.1; do
     fi
 done
 
+name="text-to-audiobook-$version-x86_64.AppImage"
+if [ -n "$cuda" ]; then
+    if [ ! -x "$cuda/text-to-audiobook-cuda" ]; then
+        echo "error: $cuda/text-to-audiobook-cuda missing (run bundle-cuda.sh)" >&2
+        exit 1
+    fi
+    mkdir -p "$appdir/usr/lib/text-to-audiobook"
+    cp -a "$cuda" "$appdir/usr/lib/text-to-audiobook/cuda"
+    name="text-to-audiobook-$version-cuda-x86_64.AppImage"
+fi
+
 mkdir -p "$out"
-target="$out/text-to-audiobook-$version-x86_64.AppImage"
+target="$out/$name"
 ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$tool" --no-appstream "$appdir" "$target"
 echo "$target"

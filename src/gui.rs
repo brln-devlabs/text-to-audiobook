@@ -589,6 +589,12 @@ impl App {
         };
         app.refresh_project_list();
         app.check_existing_segments();
+        // CPU or GPU badge: asking the driver can take a moment.
+        let repaint = app.ctx.clone();
+        std::thread::spawn(move || {
+            crate::gpu::check_device();
+            repaint.request_repaint();
+        });
         let missing = tts::missing_models(&app.cfg.settings, &app.cfg.paths);
         if !missing.is_empty() {
             app.download = Some(DownloadDialog::new(missing, None));
@@ -1376,13 +1382,23 @@ impl App {
 
     fn top_ui(&mut self, ui: &mut egui::Ui) {
         let busy = self.busy();
-        ui.vertical_centered(|ui| {
-            ui.label(
-                RichText::new("AI Text-to-Speech Pipeline")
-                    .size(18.0)
-                    .strong(),
-            );
-        });
+        let title = ui
+            .vertical_centered(|ui| {
+                ui.label(
+                    RichText::new("AI Text-to-Speech Pipeline")
+                        .size(18.0)
+                        .strong(),
+                )
+            })
+            .inner;
+        // CPU/GPU badge at the right end of the title line
+        let row = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), title.rect.y_range());
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(row)
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            |ui| device_badge(ui, crate::gpu::current_device().as_ref()),
+        );
         ui.add_space(4.0);
         for (label, is_input) in [("Input Directory:", true), ("Output Directory:", false)] {
             egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -2129,6 +2145,45 @@ impl App {
 /// left. The cut is moved to a char boundary first: slicing inside an umlaut
 /// (e.g. in a project name that every chunk path repeats) used to panic and
 /// take the whole GUI down.
+/// Badge for what speech synthesis computes on: the GPU (green), the CPU
+/// (grey; amber if a GPU was meant to be used), or "…" while the driver is
+/// asked. The hover text says why the GPU is not used.
+fn device_badge(ui: &mut egui::Ui, device: Option<&crate::gpu::ComputeDevice>) {
+    let (text, fill, hover) = match device {
+        None => (
+            "CPU/GPU …".to_string(),
+            Color32::from_gray(70),
+            "Checking for a GPU".to_string(),
+        ),
+        Some(d) => {
+            let when = if d.in_use {
+                "The speech model runs here."
+            } else {
+                "The speech model will run here once it is loaded."
+            };
+            let hover = format!("{}\n{when}", d.detail);
+            match &d.gpu {
+                Some(name) => (format!("Runs on GPU · {name}"), GREEN, hover),
+                // The GPU should have been used (CUDA package, driver too
+                // old, out of memory ...): amber instead of plain grey.
+                None if d.detail.starts_with("The GPU is not used") => {
+                    ("Runs on CPU".to_string(), ORANGE, hover)
+                }
+                None => ("Runs on CPU".to_string(), Color32::from_gray(70), hover),
+            }
+        }
+    };
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.label(RichText::new(text).color(Color32::WHITE).strong());
+        })
+        .response
+        .on_hover_text(hover);
+}
+
 fn trim_log(text: &mut String, max: usize) {
     if text.len() <= max {
         return;

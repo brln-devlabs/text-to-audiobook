@@ -48,28 +48,26 @@ pub struct QwenBackend {
     speakers: HashMap<PathBuf, (Option<SystemTime>, Tensor)>,
 }
 
-fn pick_device() -> Device {
+/// The device to compute on and, for the CPU, why not a GPU (`None`: the
+/// build has no GPU support, nothing to report).
+fn pick_device() -> (Device, Option<String>) {
     #[cfg(feature = "cuda")]
-    {
-        // cudarc loads the CUDA libraries at run time and panics if they are
-        // missing (no NVIDIA driver): then the CPU it is.
-        match std::panic::catch_unwind(|| Device::cuda_if_available(0)) {
-            Ok(Ok(d)) if d.is_cuda() => return d,
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => log::warn!("CUDA not usable: {e}"),
-            Err(_) => {
-                log::warn!("CUDA not usable (driver or CUDA libraries missing), using the CPU")
-            }
+    let picked = crate::gpu::cuda_device();
+    #[cfg(all(feature = "metal", not(feature = "cuda")))]
+    let picked = Device::new_metal(0).map_err(|e| format!("Metal not usable: {e}"));
+    // Normal build of a CUDA package that did not hand over (src/gpu.rs)
+    #[cfg(not(any(feature = "cuda", feature = "metal")))]
+    let picked: std::result::Result<Device, String> = match crate::gpu::cpu_note() {
+        Some(why) => Err(why.to_string()),
+        None => return (Device::Cpu, None),
+    };
+    match picked {
+        Ok(device) => (device, None),
+        Err(why) => {
+            log::warn!("GPU not used: {why}; computing on the CPU");
+            (Device::Cpu, Some(why))
         }
     }
-    #[cfg(feature = "metal")]
-    {
-        match Device::new_metal(0) {
-            Ok(d) => return d,
-            Err(e) => log::warn!("Metal not usable: {e}"),
-        }
-    }
-    Device::Cpu
 }
 
 /// Precision from `TTS_DTYPE`; bf16 falls back to f16 on GPUs without it.
@@ -82,7 +80,11 @@ fn resolve_dtype(device: &Device, name: &str) -> DType {
         "float32" => DType::F32,
         "float16" => DType::F16,
         "bfloat16" => {
-            let probe = Tensor::ones((2, 2), DType::BF16, device).and_then(|t| t.matmul(&t));
+            // cuBLAS and one of Candle's own kernels: the bf16 kernels are
+            // only compiled for compute capability 8.0 and newer.
+            let probe = Tensor::ones((2, 2), DType::BF16, device)
+                .and_then(|t| t.matmul(&t))
+                .and_then(|t| t + 1.0);
             match probe {
                 Ok(_) => DType::BF16,
                 Err(_) => {
@@ -120,16 +122,41 @@ impl QwenBackend {
         Ok(b)
     }
 
-    /// Load `model_name` (Hugging Face id or local directory).
+    /// Load `model_name` (Hugging Face id or local directory). If the GPU
+    /// has too little memory for it, on the CPU instead.
     fn load_any(model_name: &str, dtype_name: &str) -> Result<Self> {
         let dir = crate::hub::resolve_tts_model_dir(model_name)?;
-        let device = pick_device();
+        let (device, why_cpu) = pick_device();
+        if device.is_cpu() {
+            let backend = Self::load_on(&dir, model_name, dtype_name, device)?;
+            crate::gpu::report_cpu(why_cpu);
+            return Ok(backend);
+        }
+        match Self::load_on(&dir, model_name, dtype_name, device) {
+            Ok(backend) => {
+                crate::gpu::report_gpu();
+                Ok(backend)
+            }
+            Err(e) if is_out_of_memory_text(&format!("{e:?}")) => {
+                log::warn!(
+                    "Not enough GPU memory for {model_name}, loading it on the CPU instead \
+                     (much slower; the 0.6B model fits GPUs with 4 GB)"
+                );
+                let backend = Self::load_on(&dir, model_name, dtype_name, Device::Cpu)?;
+                crate::gpu::report_cpu(Some(format!("not enough GPU memory for {model_name}")));
+                Ok(backend)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn load_on(dir: &Path, model_name: &str, dtype_name: &str, device: Device) -> Result<Self> {
         let dtype = resolve_dtype(&device, dtype_name);
         log::info!(
             "Loading TTS model: {model_name} ({}, {dtype:?})",
             if device.is_cpu() { "CPU" } else { "GPU" }
         );
-        let loader = ModelLoader::from_local_dir(&dir)
+        let loader = ModelLoader::from_local_dir(dir)
             .map_err(|e| anyhow!("{e}"))
             .with_context(|| format!("reading model config in {}", dir.display()))?;
         let cfg = LoaderConfig {
@@ -264,7 +291,11 @@ impl QwenBackend {
 
 /// CUDA ("CUDA_ERROR_OUT_OF_MEMORY") or Metal allocation failure.
 fn is_out_of_memory(e: &candle_core::Error) -> bool {
-    let text = format!("{e:?} {e}").to_lowercase();
+    is_out_of_memory_text(&format!("{e:?} {e}"))
+}
+
+fn is_out_of_memory_text(text: &str) -> bool {
+    let text = text.to_lowercase();
     text.contains("out_of_memory") || text.contains("out of memory")
 }
 

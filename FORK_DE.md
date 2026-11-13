@@ -183,11 +183,47 @@ Beim ersten Start fragt das Programm, ob es das Sprachmodell herunterladen soll 
 mehrere GB, mit Fortschrittsanzeige). Ein abgebrochener Download geht beim nächsten Mal dort
 weiter, wo er stehen geblieben ist. Texte, Hörbücher und Einstellungen liegen in
 `Dokumente/text-to-audiobook`; „Open“ neben „Input Directory“ öffnet den Ordner, in den die
-Texte (`.md`) kommen. Die Pakete rechnen auf dem Prozessor; für NVIDIA-Grafikkarten das
-Programm wie unten beschrieben selbst bauen.
+Texte (`.md`) kommen.
+
+### Mit NVIDIA-Grafikkarte: die CUDA-Pakete
+
+Die oben genannten Pakete rechnen immer auf dem Prozessor (CPU). Für NVIDIA-Grafikkarten gibt
+es jedes Paket zusätzlich mit `cuda` im Namen:
+
+| System | Datei |
+|---|---|
+| Windows 10/11 | `text-to-audiobook-<Version>-windows-cuda-setup.exe` oder `…-windows-cuda-portable.zip` |
+| Ubuntu, Debian, Linux Mint | `text-to-audiobook-cuda_<Version>-1_amd64.deb` |
+| andere Linux-Systeme | `text-to-audiobook-<Version>-cuda-x86_64.AppImage` |
+
+Sie werden genauso installiert, sind aber rund 600–700 MB groß (installiert gut 1 GB), weil die
+CUDA-Bibliotheken von NVIDIA dabei sind. Beim Start fragt das Programm den NVIDIA-Treiber nach
+einer Grafikkarte. Ist eine passende da, rechnet die Sprachausgabe auf der GPU, sonst wie
+gewohnt auf der CPU. Ein CUDA-Paket läuft also auch auf Rechnern ohne NVIDIA-Karte, nur eben
+ohne Vorteil. Das normale und das CUDA-Paket ersetzen sich gegenseitig, man kann jederzeit
+wechseln.
+
+Voraussetzungen für die GPU:
+
+- NVIDIA-Grafikkarte ab der RTX-30-Serie bzw. den Ampere-Profikarten (RTX A500, A2000 …),
+  genauer: Compute Capability 8.0 oder höher. Ältere Karten (GTX 10xx/16xx, RTX 20xx)
+  rechnen auf der CPU.
+- NVIDIA-Treiber ab Version 570 (unterstützt CUDA 12.8). Prüfen mit `nvidia-smi`; unter
+  Ubuntu z. B. `sudo ubuntu-drivers install` oder `sudo apt install nvidia-driver-570`.
+- Grafikspeicher: 4 GB für das 0.6B-Modell, 6 GB für 1.7B. Reicht er nicht, lädt das
+  Programm das Modell auf der CPU und schreibt das ins Protokoll.
+
+Rechts oben im Programm steht, worauf gerechnet wird: grün „Runs on GPU · <Grafikkarte>“
+oder „Runs on CPU“ (orange, wenn die GPU eigentlich genutzt werden sollte). Fährt man mit der
+Maus darüber, steht dort der Grund, etwa „no NVIDIA driver installed“ oder „the NVIDIA driver
+is too old … please update the NVIDIA driver“. Dieselbe Meldung steht im Protokoll. Wer trotz
+Grafikkarte auf der CPU rechnen will, setzt die Umgebungsvariable `TTA_DEVICE=cpu`.
 
 Was in den Paketen steckt: OpenSSL (Linux) und die C/C++-Laufzeit (Windows) sind fest
-eingebaut, llama.cpp ist ohne OpenMP gebaut. Unter Linux braucht das Programm nur, was zu
+eingebaut, llama.cpp ist ohne OpenMP gebaut. Die CUDA-Pakete enthalten zusätzlich ein zweites
+Programm (`text-to-audiobook-cuda`, mit `--features cuda` gebaut) und die CUDA-Bibliotheken
+(cuBLAS, cuRAND, NVRTC, CUDA-Laufzeit) in `cuda\` neben dem Programm bzw. unter
+`/usr/lib/text-to-audiobook/cuda/`. Den NVIDIA-Treiber selbst enthalten sie nicht. Unter Linux braucht das Programm nur, was zu
 jedem Desktop gehört (libc, libstdc++, X11/Wayland, `libxkbcommon`, Grafiktreiber); das
 `.deb` zieht `libxkbcommon-x11-0` nach, die AppImage hat eine Ersatzkopie dabei. Gebaut wird
 unter Ubuntu 22.04, damit es auch auf älteren Systemen läuft (glibc ab 2.35). Wie die
@@ -218,6 +254,10 @@ auf der GPU:
 ```bash
 cargo build --release --features cuda
 ```
+
+Die Kernel werden dabei für die eingebaute Grafikkarte übersetzt (über `nvidia-smi`). Auf
+einem Rechner ohne NVIDIA-Karte oder für andere Karten gibt `CUDA_COMPUTE_CAP` die Compute
+Capability vor, z. B. `CUDA_COMPUTE_CAP=80` wie bei den CUDA-Paketen.
 
 Mit dem optionalen Llama zusätzlich `llm` angeben (`--features cuda,llm`); Llama läuft dann
 auf der CPU. Soll auch Llama auf die GPU, mit `--features llm-cuda` bauen. llama.cpp bindet CUDA dann
@@ -366,6 +406,9 @@ Zwischenstände der Python-Version dieses Forks bleiben gültig. Die Referenzsti
 
 ## Fehlerbehebung
 
+- **CUDA-Paket rechnet auf der CPU („Runs on CPU“ rechts oben):** mit der Maus über die
+  Anzeige fahren oder im Protokoll nach „GPU not used“ suchen. Meist ist der NVIDIA-Treiber zu
+  alt (ab 570 nötig) oder die Karte älter als RTX 30xx.
 - **„could not find native static library `cudart_static`“ beim Bauen:** mit
   `--features cuda` statt `llm-cuda` bauen (siehe Installation).
 - **„CUDA unknown error“ nach Standby:** das Kernelmodul neu laden oder neu starten:
